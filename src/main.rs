@@ -95,8 +95,9 @@ async fn main() -> Result<(), anyhow::Error>{
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
     let cfg = Config::from_env()?;
 
+    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
     let app_state = Arc::new( AppState {
-        pg_pool: cfg.pg.create_pool(Some(Tokio1), NoTls)?;
+        pg_pool
     });
 
     let app = Router::new()
