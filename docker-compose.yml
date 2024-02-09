@@ -1,0 +1,81 @@
+version: '3.5'
+
+x-api: &api
+  build: .
+  env_file:
+    - .env
+  deploy:
+    resources:
+      limits:
+        cpus: '0.2'
+        memory: 50M
+
+services:
+    api01:
+        <<: *api
+        environment:
+            HTTP_PORT: 8080
+        ports:
+          - "8080:8080"
+
+    api02:
+        <<: *api
+        environment:
+            HTTP_PORT: 8081
+        ports:
+          - "8081:8081"
+
+#    nginx:
+#      image: nginx:latest
+#      ports:
+#        - "9999:9999"
+#      depends_on:
+#        - api01
+#        - api02
+#      volumes:
+#        - ./nginx.conf:/etc/nginx/nginx.conf:ro
+#      deploy:
+#        resources:
+#          limits:
+#            cpus: '0.2'
+#            memory: 50M
+
+    envoy:
+      image: envoyproxy/envoy-alpine:v1.21-latest
+      container_name: envoy
+      env_file:
+        - .env
+      volumes:
+        - ./envoy.yaml:/etc/envoy/envoy.yaml
+      ports:
+        - "9999:9999"
+      depends_on:
+        - api01
+        - api02
+      deploy:
+        resources:
+          limits:
+            cpus: '0.4'
+            memory: 150M
+
+    db:
+      image: postgres
+      ports:
+        - "5432:5432"
+      env_file:
+        - .env
+      command: |
+        postgres 
+        -c config_file=/docker-entrypoint-initdb.d/postgresql.conf
+      volumes:
+        - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+        - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
+      deploy:
+        resources:
+          limits:
+            cpus: '0.7'
+            memory: 300M
+networks:
+  default:
+    driver: bridge
+    name: rinha-nginx-2024q1
