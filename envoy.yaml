@@ -1,11 +1,3 @@
-#dynamic_resources:
-#  lds_config:
-#    api_config_source:
-#      transport_api_version: V3
-#      refresh_delay: 5s
-#      api_type: REST
-#      cluster_names: [some_service]
-
 static_resources:
   listeners:
     - name: listener_0
@@ -25,16 +17,16 @@ static_resources:
                       domains: ["*"]
                       routes:
                         - match: { prefix: "/" }
-                          route: { cluster: some_service }
+                          route: { cluster: rinha_service }
                 http_filters:
                   - name: envoy.filters.http.router
   clusters:
-    - name: some_service
+    - name: rinha_service
       connect_timeout: 2s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
       load_assignment:
-        cluster_name: some_service
+        cluster_name: rinha_service
         endpoints:
           - lb_endpoints:
               - endpoint:

@@ -1,12 +1,12 @@
 @id = 1
-@port = 80
+@port = 9999
 
 ### POST /clientes/{{id}}/transacoes
 POST http://localhost:{{port}}/clientes/{{id}}/transacoes
 Content-Type: application/json
 
 {
-  "valor": 10,
+  "valor": 100000,
   "tipo": "d",
   "descricao": "debitar"
 }
