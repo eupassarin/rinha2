@@ -41,7 +41,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
     Valid(Json(transacao)): Valid<Json<TransacaoPayload>>
 ) -> Result<Json<SaldoLimite>, RouteError>   {
 
-    if id > 5 { return Err(RouteError::new_not_found()) }
+    if id > 5 { return Err(RouteError::new_not_found()); }
 
     let valor = match transacao.tipo {
         'c' => transacao.valor,
@@ -67,7 +67,7 @@ pub async fn get_extrato(
     Path(id): Path<i32>
 ) -> Result<Json<Extrato>, RouteError> {
 
-    if id > 5 || id < 0 { return Err(RouteError::new_not_found()); }
+    if id > 5 { return Err(RouteError::new_not_found()); }
 
     let (cliente, transacoes) = try_join!(
         async {
