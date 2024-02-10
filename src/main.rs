@@ -9,6 +9,7 @@ use axum_route_error::RouteError;
 use axum_valid::Valid;
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row};
 use tokio::net::TcpListener;
+use tokio::try_join;
 use validator::Validate;
 
 pub struct AppState {
@@ -65,19 +66,24 @@ pub async fn get_extrato(
     Path(id): Path<i32>
 ) -> Result<Json<Extrato>, RouteError> {
 
-    if id > 5 { return Err(RouteError::new_not_found()); }
+    if id > 5 || id < 0 { return Err(RouteError::new_not_found()); }
 
     let conn = state.pg_pool.get().await?;
-    let cliente = conn.query(&conn.prepare_cached(
-        r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#).await?, &[&id])
-    .await?;
 
-    if cliente.is_empty() { return Err(RouteError::new_not_found()); }
-
-    let transacoes = conn.query(&conn.prepare_cached(
-        r#"SELECT T.valor, T.tipo, T.descricao, T.realizada_em
-        FROM transacao T WHERE T.cliente_id = $1
-        ORDER BY T.realizada_em DESC LIMIT 10;"#).await?, &[&id]).await?;
+    let (cliente, transacoes) = try_join!(
+        async {
+            conn.query(&conn.prepare_cached(
+                r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#).await?, &[&id])
+            .await
+        },
+        async {
+            conn.query(&conn.prepare_cached(
+                    r#"SELECT T.valor, T.tipo, T.descricao, T.realizada_em
+                    FROM transacao T WHERE T.cliente_id = $1
+                    ORDER BY T.realizada_em DESC LIMIT 10;"#).await?, &[&id])
+            .await
+        }
+    )?;
 
     Ok(Json(Extrato {
         saldo: Saldo::from(&cliente[0]),
