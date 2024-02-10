@@ -44,8 +44,8 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
     if id > 5 { return Err(RouteError::new_not_found()); }
 
     let valor = match transacao.tipo {
-        'c' => transacao.valor,
         'd' => -transacao.valor,
+        'c' => transacao.valor,
         _ => return Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
     };
 
