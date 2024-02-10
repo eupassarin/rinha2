@@ -4,19 +4,19 @@ x-resources-api: &resources-api
   resources:
     limits:
       cpus: '0.2'
-      memory: 25M
+      memory: 50M
 
 x-resources-db: &resources-db
   resources:
     limits:
       cpus: '0.7'
-      memory: 475M
+      memory: 400M
 
 x-resources-nginx: &resources-nginx
   resources:
     limits:
       cpus: '0.3'
-      memory: 25M
+      memory: 05M
 
 x-api: &api
   build: .
@@ -61,7 +61,7 @@ services:
     command: |
       postgres 
       -c config_file=/docker-entrypoint-initdb.d/postgresql.conf
-      -c fsync=off
+      -c fsync=on
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
