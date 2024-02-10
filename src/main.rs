@@ -143,17 +143,16 @@ pub async fn get_extrato(
 
     let conn = state.pg_pool.get().await?;
 
-    let s_cliente = conn
-        .prepare_cached(r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#).await?;
-    let cliente = conn.query(&s_cliente, &[&id]).await?;
+    let cliente = conn.query(&conn.prepare_cached(
+        r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#).await?, &[&id])
+    .await?;
 
     if cliente.is_empty() { return Err(RouteError::new_not_found()); }
 
-    let s_transacoes = conn.prepare_cached(
+    let transacoes = conn.query(&conn.prepare_cached(
         r#"SELECT T.valor, T.tipo, T.descricao, T.realizada_em
         FROM transacao T WHERE T.cliente_id = $1
-        ORDER BY T.realizada_em DESC LIMIT 10;"#).await?;
-    let transacoes = conn.query(&s_transacoes, &[&id]).await?;
+        ORDER BY T.realizada_em DESC LIMIT 10;"#).await?, &[&id]).await?;
 
     Ok(Json(Extrato {
         saldo: Saldo::from(&cliente[0]),
