@@ -51,7 +51,8 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 
     let conn = state.pg_pool.get().await?;
     let result_transacionar = conn.query(
-        r#"CALL T($1, $2, $3, $4);"#, &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao])
+        r#"CALL T($1, $2, $3, $4, $5);"#,
+        &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor])
         .await?;
 
     match result_transacionar[0].get::<_, Option<i32>>(0) {
