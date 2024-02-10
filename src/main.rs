@@ -71,17 +71,16 @@ pub async fn get_extrato(
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(
-                r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#).await?, &[&id])
+            conn.query(r#"SELECT C.saldo, C.limite FROM cliente C WHERE C.id = $1;"#, &[&id])
             .await
         },
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(
+            conn.query(
                     r#"SELECT T.valor, T.tipo, T.descricao, T.realizada_em
                     FROM transacao T
                     WHERE T.cliente_id = $1
-                    ORDER BY T.realizada_em DESC LIMIT 10;"#).await?, &[&id])
+                    ORDER BY T.realizada_em DESC LIMIT 10;"#, &[&id])
             .await
         }
     )?;
