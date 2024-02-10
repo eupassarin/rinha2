@@ -42,15 +42,15 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 
     if id > 5 { return Err(RouteError::new_not_found()) }
 
-    let valor = match transacao.tipo.as_str() {
-        "c" => transacao.valor,
-        "d" => -transacao.valor,
+    let valor = match transacao.tipo {
+        'c' => transacao.valor,
+        'd' => -transacao.valor,
         _ => return Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
     };
 
     let conn = state.pg_pool.get().await?;
     let result_transacionar = conn.query(
-        r#"CALL TRANSACIONAR($1, $2, $3, $4);"#, &[&id, &valor, &transacao.tipo, &transacao.descricao])
+        r#"CALL T($1, $2, $3, $4);"#, &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao])
         .await?;
 
     match result_transacionar[0].get::<_, Option<i32>>(0) {
@@ -102,7 +102,7 @@ impl Config {
 #[derive(serde::Serialize, serde::Deserialize, Validate)]
 pub struct TransacaoPayload {
     pub valor: i32,
-    pub tipo: String,
+    pub tipo: char,
     #[validate(length(min = 1, max = 10))]
     pub descricao: String
 }
@@ -131,7 +131,7 @@ pub struct Extrato {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Saldo {
     pub total: i32,
-    pub data_extrato: String,
+    pub data_extrato: u64,
     pub limite: i32
 }
 
@@ -142,7 +142,7 @@ impl From<&Row> for Saldo {
             data_extrato: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_secs().to_string(),
+                .as_secs(),
             limite: row.get(1)
         }
     }
