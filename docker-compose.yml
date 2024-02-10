@@ -4,25 +4,19 @@ x-resources-api: &resources-api
   resources:
     limits:
       cpus: '0.2'
-      memory: 30M
+      memory: 25M
 
 x-resources-db: &resources-db
   resources:
     limits:
-      cpus: '0.8'
-      memory: 460M
+      cpus: '0.7'
+      memory: 475M
 
 x-resources-nginx: &resources-nginx
   resources:
     limits:
       cpus: '0.3'
-      memory: 30M
-
-x-resources-envoy: &resources-envoy
-  resources:
-    limits:
-      cpus: '0.4'
-      memory: 150M
+      memory: 25M
 
 x-api: &api
   build: .
@@ -57,20 +51,6 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     deploy:
       <<: *resources-nginx
-
-  envoy:
-    image: envoyproxy/envoy:v1.73-latest
-    profiles: [envoy]
-    container_name: envoy
-    volumes:
-      - ./envoy.yaml:/etc/envoy/envoy.yaml
-    ports:
-      - "9999:9999"
-    depends_on:
-      - api01
-      - api02
-    deploy:
-      <<: *resources-envoy
 
   db:
     image: postgres
