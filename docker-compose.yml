@@ -20,6 +20,8 @@ x-resources-nginx: &resources-nginx
 
 x-api: &api
   build: .
+  depends_on:
+    - db
   env_file:
     - .env
   deploy:

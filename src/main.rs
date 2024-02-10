@@ -7,21 +7,39 @@ use axum::{
 };
 use axum_route_error::RouteError;
 use axum_valid::Valid;
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row, Pool};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row};
 use tokio::net::TcpListener;
 use tokio::try_join;
 use validator::Validate;
+
+pub struct AppState {
+    pub pg_pool: deadpool_postgres::Pool,
+    pub limites: Vec<i32>
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error>{
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
     let cfg = Config::from_env()?;
+    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
+
+    let conn = pg_pool.get().await?;
+    let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
+        .await?.iter().map(|row| row.get(0)).collect();
+
+    let app_state = Arc::new(
+        AppState{
+            pg_pool,
+            limites
+        }
+    );
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(Arc::new( cfg.pg.create_pool(Some(Tokio1), NoTls)? ));
+        .with_state(app_state);
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
@@ -30,7 +48,7 @@ async fn main() -> Result<(), anyhow::Error>{
     Ok(())
 }
 
-pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>,
+pub async fn post_transacoes(State(state): State<Arc<AppState>>,
     Path(id): Path<i32>,
     Valid(Json(transacao)): Valid<Json<TransacaoPayload>>
 ) -> Result<Json<SaldoLimite>, RouteError>   {
@@ -43,21 +61,27 @@ pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>,
         _ => return Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
     };
 
-    let conn = pg_pool.get().await?;
+    let limite = state.limites[(id-1) as usize];
+    let conn = state.pg_pool.get().await?;
     let result_transacionar = conn.query(
-        r#"CALL T($1, $2, $3, $4, $5);"#,
-        &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor])
+        r#"CALL T($1, $2, $3, $4, $5, $6);"#,
+        &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor, &limite])
         .await?;
 
     match result_transacionar[0].get::<_, Option<i32>>(0) {
-        Some(_) => Ok(Json(SaldoLimite::from(&result_transacionar[0]))),
+        Some(_) => Ok(Json(
+            SaldoLimite {
+                saldo: result_transacionar[0].get(0),
+                limite
+            }
+        )),
         None => Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
     }
 
 }
 
 pub async fn get_extrato(
-    State(pg_pool): State<Arc<Pool>>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<i32>
 ) -> Result<Json<Extrato>, RouteError> {
 
@@ -65,12 +89,12 @@ pub async fn get_extrato(
 
     let (cliente, transacoes) = try_join!(
         async {
-            let conn = pg_pool.get().await.unwrap();
-            conn.query(r#"SELECT saldo, limite FROM cliente WHERE id = $1;"#, &[&id])
+            let conn = state.pg_pool.get().await.unwrap();
+            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1;"#, &[&id])
             .await
         },
         async {
-            let conn = pg_pool.get().await.unwrap();
+            let conn = state.pg_pool.get().await.unwrap();
             conn.query(
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao
@@ -80,8 +104,17 @@ pub async fn get_extrato(
         }
     )?;
 
+    let limite = state.limites[(id-1) as usize];
+
     Ok(Json(Extrato {
-        saldo: Saldo::from(&cliente[0]),
+        saldo: Saldo{
+            total: cliente[0].get(0),
+            data_extrato:SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            limite
+        },
         ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() })
     )
 }
@@ -114,15 +147,6 @@ pub struct SaldoLimite {
     pub saldo: i32
 }
 
-impl From<&Row> for SaldoLimite {
-    fn from(row: &Row) -> Self {
-        Self {
-            limite: row.get(1),
-            saldo: row.get(0)
-        }
-    }
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Extrato {
     pub saldo: Saldo,
@@ -134,19 +158,6 @@ pub struct Saldo {
     pub total: i32,
     pub data_extrato: u64,
     pub limite: i32
-}
-
-impl From<&Row> for Saldo {
-    fn from(row: &Row) -> Self {
-        Self {
-            total: row.get(0),
-            data_extrato: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            limite: row.get(1)
-        }
-    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
