@@ -7,27 +7,21 @@ use axum::{
 };
 use axum_route_error::RouteError;
 use axum_valid::Valid;
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row, Pool};
 use tokio::net::TcpListener;
 use tokio::try_join;
 use validator::Validate;
-
-pub struct AppState {
-    pub pg_pool: deadpool_postgres::Pool
-}
-
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error>{
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
     let cfg = Config::from_env()?;
-    let app_state = Arc::new( AppState { pg_pool: cfg.pg.create_pool(Some(Tokio1), NoTls)? });
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(app_state);
+        .with_state(Arc::new( cfg.pg.create_pool(Some(Tokio1), NoTls)? ));
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
@@ -36,7 +30,7 @@ async fn main() -> Result<(), anyhow::Error>{
     Ok(())
 }
 
-pub async fn post_transacoes(State(state): State<Arc<AppState>>,
+pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>,
     Path(id): Path<i32>,
     Valid(Json(transacao)): Valid<Json<TransacaoPayload>>
 ) -> Result<Json<SaldoLimite>, RouteError>   {
@@ -49,7 +43,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
         _ => return Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
     };
 
-    let conn = state.pg_pool.get().await?;
+    let conn = pg_pool.get().await?;
     let result_transacionar = conn.query(
         r#"CALL T($1, $2, $3, $4, $5);"#,
         &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor])
@@ -63,7 +57,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 }
 
 pub async fn get_extrato(
-    State(state): State<Arc<AppState>>,
+    State(pg_pool): State<Arc<Pool>>,
     Path(id): Path<i32>
 ) -> Result<Json<Extrato>, RouteError> {
 
@@ -71,12 +65,12 @@ pub async fn get_extrato(
 
     let (cliente, transacoes) = try_join!(
         async {
-            let conn = state.pg_pool.get().await.unwrap();
+            let conn = pg_pool.get().await.unwrap();
             conn.query(r#"SELECT saldo, limite FROM cliente WHERE id = $1;"#, &[&id])
             .await
         },
         async {
-            let conn = state.pg_pool.get().await.unwrap();
+            let conn = pg_pool.get().await.unwrap();
             conn.query(
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao

@@ -3,8 +3,6 @@ name = "api-yt"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 axum = { version  = "0.7.4", features = ["tokio"] }
 axum-route-error = "5.0.1"
@@ -17,3 +15,8 @@ config = "0.14.0"
 deadpool-postgres = { version = "0.12.1", features = ["rt_tokio_1","serde"] }
 validator = { version = "0.16.1", features = ["derive"] }
 axum-valid = { version = "0.15.0", features = ["422"] }
+
+[profile.release]
+codegen-units = 1
+lto = false
+
