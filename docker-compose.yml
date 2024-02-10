@@ -16,7 +16,7 @@ x-resources-nginx: &resources-nginx
   resources:
     limits:
       cpus: '0.3'
-      memory: 05M
+      memory: 50M
 
 x-api: &api
   build: .
