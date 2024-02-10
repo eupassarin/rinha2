@@ -61,7 +61,7 @@ services:
     command: |
       postgres 
       -c config_file=/docker-entrypoint-initdb.d/postgresql.conf
-      -c fsync=on
+      -c fsync=off
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
