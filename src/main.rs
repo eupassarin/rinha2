@@ -26,6 +26,7 @@ async fn main() -> Result<(), anyhow::Error>{
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
     let conn = pg_pool.get().await?;
+
     let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
         .await?.iter().map(|row| row.get(0)).collect();
 
@@ -104,8 +105,6 @@ pub async fn get_extrato(
         }
     )?;
 
-    let limite = state.limites[(id-1) as usize];
-
     Ok(Json(Extrato {
         saldo: Saldo{
             total: cliente[0].get(0),
@@ -113,7 +112,7 @@ pub async fn get_extrato(
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            limite
+            limite: state.limites[(id-1) as usize]
         },
         ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() })
     )
