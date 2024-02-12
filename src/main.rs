@@ -23,12 +23,7 @@ async fn main() {
     let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
-    let app_state = Arc::new(
-        AppState{
-            pg_pool,
-            limites
-        }
-    );
+    let app_state = Arc::new(AppState{ pg_pool, limites});
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
@@ -79,16 +74,16 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1;"#, &[&id])
+            conn.query(&conn.prepare_cached(r#"SELECT saldo FROM cliente WHERE id = $1;"#).await.unwrap(), &[&id])
             .await
         },
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(
+            conn.query(&conn.prepare_cached(
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao
                     WHERE cliente_id = $1
-                    ORDER BY realizada_em DESC LIMIT 10;"#, &[&id])
+                    ORDER BY realizada_em DESC LIMIT 10;"#).await.unwrap(), &[&id])
             .await
         }
     ).unwrap();
