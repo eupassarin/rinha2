@@ -15,8 +15,9 @@ config = "0.14.0"
 deadpool-postgres = { version = "0.12.1", features = ["rt_tokio_1","serde"] }
 validator = { version = "0.16.1", features = ["derive"] }
 axum-valid = { version = "0.15.0", features = ["422"] }
+libc = "0.2.153"
 
-[profile.release]
-codegen-units = 1
-lto = false
+#[profile.release]
+#codegen-units = 1
+#lto = false
 

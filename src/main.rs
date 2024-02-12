@@ -179,6 +179,6 @@ pub fn now_monotonic() -> u64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW_APPROX, &mut time) };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) };
     time.tv_sec as u64
 }
