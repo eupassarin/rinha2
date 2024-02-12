@@ -24,25 +24,43 @@ CREATE INDEX CONCURRENTLY REALIZADA_EM_IDX ON TRANSACAO (REALIZADA_EM DESC) WITH
 CLUSTER TRANSACAO USING CLIENTE_IDX;
 
 --PROCEDURE
-CREATE PROCEDURE T(
+CREATE FUNCTION T(
     CLIENTE_ID SMALLINT,
     VALOR INT,
     TIPO TEXT,
     DESCRICAO TEXT,
     VALOR_ABS INT,
-    P_LIMITE INT,
-    INOUT NOVO_SALDO INT DEFAULT NULL)
-LANGUAGE plpgsql
+    P_LIMITE INT)
+    RETURNS INT  -- Alterado para retornar o novo saldo diretamente
+    LANGUAGE plpgsql
 AS $$
+DECLARE
+    novo_saldo INT;
 BEGIN
-  UPDATE CLIENTE SET SALDO = SALDO + VALOR
-  WHERE ID = CLIENTE_ID AND saldo + VALOR >= - P_LIMITE
-  RETURNING SALDO INTO NOVO_SALDO;
+    -- Trava a linha do cliente para evitar condições de corrida
+    SELECT SALDO INTO novo_saldo
+    FROM CLIENTE
+    WHERE ID = CLIENTE_ID
+        FOR UPDATE;
 
-  IF NOVO_SALDO IS NULL THEN RETURN; END IF;
+    -- Verifica se a atualização é possível
+    IF novo_saldo + VALOR >= -P_LIMITE THEN
+        -- Atualiza o saldo do cliente
+        UPDATE CLIENTE
+        SET SALDO = SALDO + VALOR
+        WHERE ID = CLIENTE_ID
+        RETURNING SALDO INTO novo_saldo;
 
-  INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
-  VALUES(CLIENTE_ID, VALOR_ABS, TIPO, DESCRICAO);
+        -- Verifica se o saldo foi atualizado com sucesso
+        IF novo_saldo IS NOT NULL THEN
+            -- Insere a transação
+            INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
+            VALUES (CLIENTE_ID, VALOR_ABS, TIPO, DESCRICAO);
+        END IF;
+    END IF;
+
+    -- Retorna o novo saldo
+    RETURN novo_saldo;
 END;
 $$;
 
