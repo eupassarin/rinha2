@@ -2,6 +2,7 @@ use std::{env, sync::Arc};
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body};
 use axum::response::IntoResponse;
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
+use serde_json::to_string;
 use tokio::net::TcpListener;
 use tokio::try_join;
 
@@ -22,7 +23,12 @@ async fn main() {
     let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
-    let app_state = Arc::new(AppState{ pg_pool, limites});
+    let app_state = Arc::new(
+        AppState{
+            pg_pool,
+            limites
+        }
+    );
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
@@ -38,16 +44,17 @@ async fn main() {
 pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<i16>, payload: body::Bytes)
     -> impl IntoResponse
 {
+
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
-    let transacao = match serde_json::from_slice::<TransacaoPayload>(&payload) {
+    let trans = match serde_json::from_slice::<TransacaoPayload>(&payload) {
         Ok(p) if (p.descricao.len() >= 1 && p.descricao.len() <= 10) => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
-    let valor = match transacao.tipo {
-        'd' => -transacao.valor,
-        'c' => transacao.valor,
+    let valor = match trans.tipo {
+        'd' => -trans.valor,
+        'c' => trans.valor,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
@@ -55,17 +62,14 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     let conn = state.pg_pool.get().await.unwrap();
 
     let res = conn.query(
-        r#"UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 AND SALDO + $1 + $3 >= 0 RETURNING SALDO"#,
-        &[&valor, &id, &limite]).await.unwrap();
+        r#"CALL T($1, $2, $3, $4, $5, $6);"#,
+        &[&id, &valor, &trans.tipo.to_string(), &trans.descricao, &trans.valor, &limite])
+        .await.unwrap();
 
-    if res.is_empty() { return (StatusCode::UNPROCESSABLE_ENTITY, String::new()); }
-
-    conn.query(
-        r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO) VALUES($1, $2, $3, $4)"#,
-        &[&id, &transacao.valor, &transacao.tipo.to_string(), &transacao.descricao]).await.unwrap();
-
-    (StatusCode::OK, serde_json::to_string(&SaldoLimite { saldo: res[0].get(0), limite }).unwrap())
-
+    match res[0].get::<_, Option<i32>>(0) {
+        Some(saldo) => (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap()),
+        None => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+    }
 }
 
 pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
@@ -75,7 +79,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1"#, &[&id])
+            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1;"#, &[&id])
             .await
         },
         async {
@@ -84,7 +88,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao
                     WHERE cliente_id = $1
-                    ORDER BY realizada_em DESC LIMIT 10"#, &[&id])
+                    ORDER BY realizada_em DESC LIMIT 10;"#, &[&id])
             .await
         }
     ).unwrap();
