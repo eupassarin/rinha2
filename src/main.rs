@@ -1,7 +1,7 @@
 use std::{env, sync::Arc};
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body};
 use axum::response::IntoResponse;
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
 use tokio::net::TcpListener;
 use tokio::try_join;
 
@@ -11,23 +11,18 @@ pub struct AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error>{
+async fn main() {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
-    let cfg = Config::from_env()?;
-    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
+    let cfg = Config::from_env().unwrap();
+    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap();
 
-    let conn = pg_pool.get().await?;
+    let conn = pg_pool.get().await.unwrap();
 
     let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
-        .await?.iter().map(|row| row.get(0)).collect();
+        .await.unwrap().iter().map(|row| row.get(0)).collect();
 
-    let app_state = Arc::new(
-        AppState{
-            pg_pool,
-            limites
-        }
-    );
+    let app_state = Arc::new(AppState{ pg_pool, limites});
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
@@ -35,17 +30,14 @@ async fn main() -> Result<(), anyhow::Error>{
         .with_state(app_state);
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
-    axum::serve(listener, app).await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 
-    Ok(())
 }
 
-pub async fn post_transacoes(State(state): State<Arc<AppState>>,
-    Path(id): Path<i16>,
-    payload: body::Bytes
-) -> impl IntoResponse   {
-
+pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<i16>, payload: body::Bytes)
+    -> impl IntoResponse
+{
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let transacao = match serde_json::from_slice::<TransacaoPayload>(&payload) {
@@ -61,34 +53,29 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 
     let limite = state.limites[(id-1) as usize];
     let conn = state.pg_pool.get().await.unwrap();
-    let result_transacionar = conn.query(
-        r#"CALL T($1, $2, $3, $4, $5, $6);"#,
-        &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor, &limite])
-        .await.unwrap();
 
-    match result_transacionar[0].get::<_, Option<i32>>(0) {
-        Some(_) => (StatusCode::OK, serde_json::to_string(
-            &SaldoLimite {
-                saldo: result_transacionar[0].get(0),
-                limite
-            }
-        ).unwrap()),
-        None => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-    }
+    let res = conn.query(
+        r#"UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 AND SALDO + $1 + $3 >= 0 RETURNING SALDO"#,
+        &[&valor, &id, &limite]).await.unwrap();
+
+    if res.is_empty() { return (StatusCode::UNPROCESSABLE_ENTITY, String::new()); }
+
+    conn.query(
+        r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO) VALUES($1, $2, $3, $4)"#,
+        &[&id, &transacao.valor, &transacao.tipo.to_string(), &transacao.descricao]).await.unwrap();
+
+    (StatusCode::OK, serde_json::to_string(&SaldoLimite { saldo: res[0].get(0), limite }).unwrap())
 
 }
 
-pub async fn get_extrato(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i16>
-) -> impl IntoResponse  {
+pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1;"#, &[&id])
+            conn.query(r#"SELECT saldo FROM cliente WHERE id = $1"#, &[&id])
             .await
         },
         async {
@@ -97,7 +84,7 @@ pub async fn get_extrato(
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao
                     WHERE cliente_id = $1
-                    ORDER BY realizada_em DESC LIMIT 10;"#, &[&id])
+                    ORDER BY realizada_em DESC LIMIT 10"#, &[&id])
             .await
         }
     ).unwrap();
@@ -109,7 +96,13 @@ pub async fn get_extrato(
                     data_extrato: now_monotonic(),
                     limite: state.limites[(id-1) as usize]
             },
-            ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() }
+            ultimas_transacoes: transacoes.iter().map(|row| Transacao {
+                valor: row.get(0),
+                tipo: row.get(1),
+                descricao: row.get(2),
+                realizada_em: row.get::<usize,i64>(3)
+
+            }).collect() }
         ).unwrap()
     )
 }
@@ -160,17 +153,6 @@ pub struct Transacao {
     pub tipo: String,
     pub descricao: String,
     pub realizada_em: i64
-}
-
-impl From<&Row> for Transacao {
-    fn from(row: &Row) -> Self {
-        Self {
-            valor: row.get(0),
-            tipo: row.get(1),
-            descricao: row.get(2),
-            realizada_em: row.get::<usize,i64>(3)
-        }
-    }
 }
 
 pub fn now_monotonic() -> u64 {

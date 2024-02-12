@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 axum = { version  = "0.7.4", features = ["tokio"] }
 tokio = { version = "1.36.0", features = ["full"] }
-anyhow = "1.0.79"
 dotenv = "0.15.0"
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
@@ -14,7 +13,7 @@ config = "0.14.0"
 deadpool-postgres = { version = "0.12.1", features = ["rt_tokio_1","serde"] }
 libc = "0.2.153"
 
-#[profile.release]
-#codegen-units = 1
-#lto = false
+[profile.release]
+codegen-units = 1
+lto = false
 
