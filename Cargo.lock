@@ -46,6 +46,7 @@ dependencies = [
  "config",
  "deadpool-postgres",
  "dotenv",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
