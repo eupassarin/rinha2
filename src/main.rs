@@ -1,16 +1,9 @@
 use std::{env, sync::Arc};
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    routing::{get, post},
-    Router, Json,
-};
-use axum_route_error::RouteError;
-use axum_valid::Valid;
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body};
+use axum::response::IntoResponse;
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, tokio_postgres::Row};
 use tokio::net::TcpListener;
 use tokio::try_join;
-use validator::Validate;
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
@@ -50,32 +43,37 @@ async fn main() -> Result<(), anyhow::Error>{
 
 pub async fn post_transacoes(State(state): State<Arc<AppState>>,
     Path(id): Path<i16>,
-    Valid(Json(transacao)): Valid<Json<TransacaoPayload>>
-) -> Result<Json<SaldoLimite>, RouteError>   {
+    payload: body::Bytes
+) -> impl IntoResponse   {
 
-    if id > 5 { return Err(RouteError::new_not_found()); }
+    if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
+
+    let transacao = match serde_json::from_slice::<TransacaoPayload>(&payload) {
+        Ok(p) if (p.descricao.len() >= 1 && p.descricao.len() <= 10) => p,
+        _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+    };
 
     let valor = match transacao.tipo {
         'd' => -transacao.valor,
         'c' => transacao.valor,
-        _ => return Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
+        _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
     let limite = state.limites[(id-1) as usize];
-    let conn = state.pg_pool.get().await?;
+    let conn = state.pg_pool.get().await.unwrap();
     let result_transacionar = conn.query(
         r#"CALL T($1, $2, $3, $4, $5, $6);"#,
         &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor, &limite])
-        .await?;
+        .await.unwrap();
 
     match result_transacionar[0].get::<_, Option<i32>>(0) {
-        Some(_) => Ok(Json(
-            SaldoLimite {
+        Some(_) => (StatusCode::OK, serde_json::to_string(
+            &SaldoLimite {
                 saldo: result_transacionar[0].get(0),
                 limite
             }
-        )),
-        None => Err(RouteError::new_from_status(StatusCode::UNPROCESSABLE_ENTITY))
+        ).unwrap()),
+        None => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     }
 
 }
@@ -83,9 +81,9 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 pub async fn get_extrato(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i16>
-) -> Result<Json<Extrato>, RouteError> {
+) -> impl IntoResponse  {
 
-    if id > 5 { return Err(RouteError::new_not_found()); }
+    if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let (cliente, transacoes) = try_join!(
         async {
@@ -102,15 +100,17 @@ pub async fn get_extrato(
                     ORDER BY realizada_em DESC LIMIT 10;"#, &[&id])
             .await
         }
-    )?;
+    ).unwrap();
 
-    Ok(Json(Extrato {
-        saldo: Saldo{
-            total: cliente[0].get(0),
-            data_extrato: now_monotonic(),
-            limite: state.limites[(id-1) as usize]
-        },
-        ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() })
+    (StatusCode::OK, serde_json::to_string(
+        &Extrato {
+                saldo: Saldo{
+                    total: cliente[0].get(0),
+                    data_extrato: now_monotonic(),
+                    limite: state.limites[(id-1) as usize]
+            },
+            ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() }
+        ).unwrap()
     )
 }
 
@@ -128,11 +128,10 @@ impl Config {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Validate)]
+#[derive(serde::Deserialize)]
 pub struct TransacaoPayload {
     pub valor: i32,
     pub tipo: char,
-    #[validate(length(min = 1, max = 10))]
     pub descricao: String
 }
 
