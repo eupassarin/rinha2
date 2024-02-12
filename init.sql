@@ -41,7 +41,7 @@ BEGIN
     SELECT SALDO INTO saldo_atual
     FROM CLIENTE
     WHERE ID = CLIENTE_ID
-        FOR UPDATE;
+    FOR SHARE;
 
     IF saldo_atual + VALOR >= -P_LIMITE THEN
 
