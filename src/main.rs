@@ -64,7 +64,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
     let limite = state.limites[(id-1) as usize];
     let conn = state.pg_pool.get().await?;
     let result_transacionar = conn.query(
-        r#"SELECT T($1, $2, $3, $4, $5, $6);"#,
+        r#"CALL T($1, $2, $3, $4, $5, $6);"#,
         &[&id, &valor, &transacao.tipo.to_string(), &transacao.descricao, &transacao.valor, &limite])
         .await?;
 
