@@ -1,4 +1,4 @@
-use std::{env, sync::Arc, time::SystemTime};
+use std::{env, sync::Arc};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -16,7 +16,6 @@ pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
     pub limites: Vec<i32>
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error>{
@@ -50,7 +49,7 @@ async fn main() -> Result<(), anyhow::Error>{
 }
 
 pub async fn post_transacoes(State(state): State<Arc<AppState>>,
-    Path(id): Path<i32>,
+    Path(id): Path<i16>,
     Valid(Json(transacao)): Valid<Json<TransacaoPayload>>
 ) -> Result<Json<SaldoLimite>, RouteError>   {
 
@@ -83,7 +82,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>,
 
 pub async fn get_extrato(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<i32>
+    Path(id): Path<i16>
 ) -> Result<Json<Extrato>, RouteError> {
 
     if id > 5 { return Err(RouteError::new_not_found()); }
@@ -108,17 +107,14 @@ pub async fn get_extrato(
     Ok(Json(Extrato {
         saldo: Saldo{
             total: cliente[0].get(0),
-            data_extrato:SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            data_extrato: now_monotonic(),
             limite: state.limites[(id-1) as usize]
         },
         ultimas_transacoes: transacoes.iter().map(|row| Transacao::from(row)).collect() })
     )
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct Config {
     pub pg: deadpool_postgres::Config
 }
@@ -140,26 +136,26 @@ pub struct TransacaoPayload {
     pub descricao: String
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct SaldoLimite {
     pub limite: i32,
     pub saldo: i32
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct Extrato {
     pub saldo: Saldo,
     pub ultimas_transacoes: Vec<Transacao>
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct Saldo {
     pub total: i32,
     pub data_extrato: u64,
     pub limite: i32
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 pub struct Transacao {
     pub valor: i32,
     pub tipo: String,
@@ -173,9 +169,16 @@ impl From<&Row> for Transacao {
             valor: row.get(0),
             tipo: row.get(1),
             descricao: row.get(2),
-            realizada_em: row.get::<usize,SystemTime>(3)
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap().as_secs() as i64
+            realizada_em: row.get::<usize,i64>(3)
         }
     }
+}
+
+pub fn now_monotonic() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW_APPROX, &mut time) };
+    time.tv_sec as u64
 }

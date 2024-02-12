@@ -1,5 +1,5 @@
 ## docker file to build and run rust
-FROM rust:1.75.0-slim-buster
+FROM rust:1.76.0-slim-buster
 WORKDIR /app
 COPY src/ src/
 COPY Cargo.toml .
