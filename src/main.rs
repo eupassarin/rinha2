@@ -47,19 +47,24 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
-    let valor = match trans.tipo {
-        'd' => -trans.valor,
-        'c' => trans.valor,
+    let conn = state.pg_pool.get().await.unwrap();
+    let limite = state.limites[(id-1) as usize];
+
+    let res = match trans.tipo {
+        'd' => {
+            conn.query(
+                r#"CALL D($1, $2, $3, $4);"#,
+                &[&id, &trans.valor, &trans.descricao, &limite])
+                .await.unwrap()
+        },
+        'c' => {
+            conn.query(
+                r#"CALL C($1, $2, $3, $4);"#,
+                &[&id, &trans.valor, &trans.descricao, &limite])
+                .await.unwrap()
+        },
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
-
-    let limite = state.limites[(id-1) as usize];
-    let conn = state.pg_pool.get().await.unwrap();
-
-    let res = conn.query(
-        r#"CALL T($1, $2, $3, $4, $5, $6);"#,
-        &[&id, &valor, &trans.tipo.to_string(), &trans.descricao, &trans.valor, &limite])
-        .await.unwrap();
 
     match res[0].get::<_, Option<i32>>(0) {
         Some(saldo) => (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap()),
