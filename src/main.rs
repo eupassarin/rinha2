@@ -1,10 +1,8 @@
 use std::{env, sync::Arc};
-use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body};
-use axum::response::IntoResponse;
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
 use serde_json::to_string;
-use tokio::net::TcpListener;
-use tokio::try_join;
+use tokio::{net::TcpListener, try_join};
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
