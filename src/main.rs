@@ -53,13 +53,13 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     let res = match trans.tipo {
         'd' => {
             conn.query(
-                r#"CALL D($1, $2, $3, $4);"#,
+                r#"SELECT D($1, $2, $3, $4);"#,
                 &[&id, &trans.valor, &trans.descricao, &limite])
                 .await.unwrap()
         },
         'c' => {
             conn.query(
-                r#"CALL C($1, $2, $3, $4);"#,
+                r#"SELECT C($1, $2, $3, $4);"#,
                 &[&id, &trans.valor, &trans.descricao, &limite])
                 .await.unwrap()
         },
