@@ -81,7 +81,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
         }
     ).unwrap();
 
-    (StatusCode::OK, serde_json::to_string(
+    (StatusCode::OK, to_string(
         &Extrato {
                 saldo: Saldo{
                     total: cliente[0].get(0),
