@@ -42,7 +42,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
-    let trans = match serde_json::from_slice::<TransacaoPayload>(&payload) {
+    let t = match serde_json::from_slice::<TransacaoPayload>(&payload) {
         Ok(p) if (p.descricao.len() >= 1 && p.descricao.len() <= 10) => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
@@ -50,19 +50,9 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     let conn = state.pg_pool.get().await.unwrap();
     let limite = state.limites[(id-1) as usize];
 
-    let res = match trans.tipo {
-        'd' => {
-            conn.query(
-                r#"SELECT D($1, $2, $3, $4);"#,
-                &[&id, &trans.valor, &trans.descricao, &limite])
-                .await.unwrap()
-        },
-        'c' => {
-            conn.query(
-                r#"SELECT C($1, $2, $3, $4);"#,
-                &[&id, &trans.valor, &trans.descricao, &limite])
-                .await.unwrap()
-        },
+    let res = match t.tipo {
+        'd' => conn.query("SELECT D($1, $2, $3, $4)", &[&id, &t.valor, &t.descricao, &limite]).await.unwrap(),
+        'c' => conn.query("SELECT C($1, $2, $3)", &[&id, &t.valor, &t.descricao]).await.unwrap(),
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
@@ -79,7 +69,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(r#"SELECT saldo FROM cliente WHERE id = $1;"#).await.unwrap(), &[&id])
+            conn.query(&conn.prepare_cached(r#"SELECT saldo FROM cliente WHERE id = $1"#).await.unwrap(), &[&id])
             .await
         },
         async {
@@ -88,7 +78,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
                     r#"SELECT valor, tipo, descricao, realizada_em
                     FROM transacao
                     WHERE cliente_id = $1
-                    ORDER BY realizada_em DESC LIMIT 10;"#).await.unwrap(), &[&id])
+                    ORDER BY realizada_em DESC LIMIT 10"#).await.unwrap(), &[&id])
             .await
         }
     ).unwrap();
@@ -105,7 +95,6 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
                 tipo: row.get(1),
                 descricao: row.get(2),
                 realizada_em: row.get::<usize,i64>(3)
-
             }).collect() }
         ).unwrap()
     )
