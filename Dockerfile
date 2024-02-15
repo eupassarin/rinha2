@@ -1,14 +1,26 @@
-FROM rust:1.76.0 AS builder
-WORKDIR /usr/src/app
-COPY Cargo.toml Cargo.lock ./
-COPY .env .
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
+ARG BINARY_NAME_DEFAULT=api-yt
+FROM clux/muslrust:stable as builder
+ARG BINARY_NAME_DEFAULT
+ENV BINARY_NAME=$BINARY_NAME_DEFAULT
+
+COPY Cargo.lock .
+COPY Cargo.toml .
+RUN mkdir src \
+    && echo "fn main() {print!(\"Dummy main\");} // dummy file" > src/main.rs
+RUN set -x && cargo build --target x86_64-unknown-linux-musl --release
+RUN ["/bin/bash", "-c", "set -x && rm target/x86_64-unknown-linux-musl/release/deps/${BINARY_NAME//-/_}*"]
+
 COPY src ./src
-RUN cargo install --path .
+RUN set -x && cargo build --target x86_64-unknown-linux-musl --release
+RUN mkdir -p /build-out
+RUN set -x && cp target/x86_64-unknown-linux-musl/release/$BINARY_NAME /build-out/
 
 FROM debian:bookworm-slim
-WORKDIR /usr/src/app
-COPY --from=builder /usr/local/cargo/bin/api-yt .
-EXPOSE 80
-CMD ["./api-yt"]
+
+ARG BINARY_NAME_DEFAULT
+ENV BINARY_NAME=$BINARY_NAME_DEFAULT
+
+ENV RUST_LOG="error,$BINARY_NAME=info"
+COPY --from=builder /build-out/$BINARY_NAME /
+
+CMD ["/api-yt"]
