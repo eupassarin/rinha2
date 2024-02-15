@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
-use serde_json::to_string;
+use serde_json::{from_slice, to_string};
 use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
@@ -19,7 +19,7 @@ async fn main() {
 
     let conn = pg_pool.get().await.unwrap();
 
-    let limites = conn.query(r#"SELECT limite FROM cliente ORDER BY ID ASC"#, &[])
+    let limites = conn.query(SELECT_LIMITE, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
     let app_state = Arc::new(AppState{ pg_pool, limites});
@@ -35,57 +35,37 @@ async fn main() {
 
 }
 
-pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<i16>, payload: body::Bytes)
-    -> impl IntoResponse
+pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<i16>, transacao: body::Bytes)
+                             -> impl IntoResponse
 {
-
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
-    let t = match serde_json::from_slice::<TransacaoPayload>(&payload) {
-        Ok(p) if (p.descricao.len() >= 1 && p.descricao.len() <= 10) => p,
+    let t = match from_slice::<TransacaoPayload>(&transacao) {
+        Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
     let conn = state.pg_pool.get().await.unwrap();
-    let limite = state.limites[(id-1) as usize];
-
-    let res = match t.tipo {
-        'd' => {
-            match conn.query(
-                r#"UPDATE CLIENTE SET SALDO = SALDO - $1 WHERE ID = $2 RETURNING SALDO"#, &[&t.valor, &id])
-                .await {
-                    Ok(result) => {
-                        task::spawn(async move {
-                            conn.query(r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
-                                            VALUES($1, $2, 'd', $3)"#, &[&id, &t.valor, &t.descricao]
-                            ).await.unwrap();
-                        });
-                        let saldo = Ok::<i32, Error>(result[0].get(0)).unwrap();
-                        (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap())
-                    },
-                    Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-                }
+    match conn.query(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
+        Ok(result) => {
+            task::spawn(async move {
+                conn.query(INSERT_TRANSACTION,
+                           &[&id,
+                               &t.valor,
+                               &t.tipo.to_string(),
+                               &t.descricao])
+                    .await.unwrap();
+            });
+            (
+                StatusCode::OK,
+                to_string(&SaldoLimite {
+                    saldo: Ok::<i32, Error>(result[0].get(0)).unwrap(),
+                    limite: state.limites[(id - 1) as usize]
+                }).unwrap()
+            )
         },
-        'c' => {
-            match conn.query(
-                r#"UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 RETURNING SALDO"#, &[&t.valor, &id])
-                .await {
-                Ok(result) => {
-                    task::spawn(async move {
-                        conn.query(r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
-                                            VALUES($1, $2, 'c', $3)"#, &[&id, &t.valor, &t.descricao]
-                        ).await.unwrap();
-                    });
-                    let saldo = Ok::<i32, Error>(result[0].get(0)).unwrap();
-                    (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap())
-
-                },
-                Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-            }
-        },
-        _ => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-    };
-    res
+        Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+    }
 }
 
 pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
@@ -95,24 +75,18 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(r#"SELECT saldo FROM cliente WHERE id = $1"#).await.unwrap(), &[&id])
-            .await
+            conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await
         },
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(
-                    r#"SELECT valor, tipo, descricao, realizada_em
-                    FROM transacao
-                    WHERE cliente_id = $1
-                    ORDER BY realizada_em DESC LIMIT 10"#).await.unwrap(), &[&id])
-            .await
+            conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await
         }
     ).unwrap();
 
     (StatusCode::OK, to_string(
         &Extrato {
                 saldo: Saldo{
-                    total: cliente[0].get(0),
+                    total: cliente.get(0),
                     data_extrato: now_monotonic(),
                     limite: state.limites[(id-1) as usize]
             },
@@ -125,6 +99,17 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
         ).unwrap()
     )
 }
+
+const UPDATE_SALDO: &str = "UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 RETURNING SALDO";
+const INSERT_TRANSACTION: &str = "INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)VALUES($1, $2, $3, $4)";
+const SELECT_TRANSACAO: &str = "
+    SELECT valor, tipo, descricao, realizada_em
+    FROM transacao
+    WHERE cliente_id = $1
+    ORDER BY realizada_em DESC LIMIT 10";
+
+const SELECT_SALDO: &str = "SELECT saldo FROM cliente WHERE id = $1";
+const SELECT_LIMITE: &str = "SELECT limite FROM cliente ORDER BY ID ASC";
 
 #[derive(serde::Deserialize)]
 pub struct Config {
@@ -141,38 +126,15 @@ impl Config {
 }
 
 #[derive(serde::Deserialize)]
-pub struct TransacaoPayload {
-    pub valor: i32,
-    pub tipo: char,
-    pub descricao: String
-}
-
+pub struct TransacaoPayload { pub valor: i32, pub tipo: char, pub descricao: String }
 #[derive(serde::Serialize)]
-pub struct SaldoLimite {
-    pub limite: i32,
-    pub saldo: i32
-}
-
+pub struct SaldoLimite { pub limite: i32, pub saldo: i32 }
 #[derive(serde::Serialize)]
-pub struct Extrato {
-    pub saldo: Saldo,
-    pub ultimas_transacoes: Vec<Transacao>
-}
-
+pub struct Extrato { pub saldo: Saldo, pub ultimas_transacoes: Vec<Transacao> }
 #[derive(serde::Serialize)]
-pub struct Saldo {
-    pub total: i32,
-    pub data_extrato: u64,
-    pub limite: i32
-}
-
+pub struct Saldo { pub total: i32, pub data_extrato: u64, pub limite: i32 }
 #[derive(serde::Serialize)]
-pub struct Transacao {
-    pub valor: i32,
-    pub tipo: String,
-    pub descricao: String,
-    pub realizada_em: i64
-}
+pub struct Transacao { pub valor: i32, pub tipo: String, pub descricao: String, pub realizada_em: i64 }
 
 pub fn now_monotonic() -> u64 {
     let mut time = libc::timespec {
