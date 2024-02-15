@@ -1,8 +1,9 @@
 use std::{env, sync::Arc};
+use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
 use serde_json::to_string;
-use tokio::{net::TcpListener, try_join};
+use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
@@ -49,15 +50,42 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     let limite = state.limites[(id-1) as usize];
 
     let res = match t.tipo {
-        'd' => conn.query("SELECT D($1, $2, $3, $4)", &[&id, &t.valor, &t.descricao, &limite]).await.unwrap(),
-        'c' => conn.query("SELECT C($1, $2, $3)", &[&id, &t.valor, &t.descricao]).await.unwrap(),
-        _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-    };
+        'd' => {
+            match conn.query(
+                r#"UPDATE CLIENTE SET SALDO = SALDO - $1 WHERE ID = $2 RETURNING SALDO"#, &[&t.valor, &id])
+                .await {
+                    Ok(result) => {
+                        task::spawn(async move {
+                            conn.query(r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
+                                            VALUES($1, $2, 'd', $3)"#, &[&id, &t.valor, &t.descricao]
+                            ).await.unwrap();
+                        });
+                        let saldo = Ok::<i32, Error>(result[0].get(0)).unwrap();
+                        (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap())
+                    },
+                    Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+                }
+        },
+        'c' => {
+            match conn.query(
+                r#"UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 RETURNING SALDO"#, &[&t.valor, &id])
+                .await {
+                Ok(result) => {
+                    task::spawn(async move {
+                        conn.query(r#"INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)
+                                            VALUES($1, $2, 'c', $3)"#, &[&id, &t.valor, &t.descricao]
+                        ).await.unwrap();
+                    });
+                    let saldo = Ok::<i32, Error>(result[0].get(0)).unwrap();
+                    (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap())
 
-    match res[0].get::<_, Option<i32>>(0) {
-        Some(saldo) => (StatusCode::OK, to_string(&SaldoLimite { saldo, limite }).unwrap()),
-        None => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
-    }
+                },
+                Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+            }
+        },
+        _ => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+    };
+    res
 }
 
 pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
