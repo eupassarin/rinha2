@@ -2,12 +2,15 @@ use std::{env, sync::Arc};
 use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
+use deadpool_postgres::tokio_postgres::Statement;
 use serde_json::{from_slice, to_string};
 use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
-    pub limites: Vec<i32>
+    pub limites: Vec<i32>,
+    pub select_saldo: Statement,
+    pub select_transacao: Statement
 }
 
 #[tokio::main]
@@ -25,10 +28,16 @@ async fn main() {
     }
 
     let conn = pg_pool.get().await.unwrap();
+    let select_saldo = conn.prepare_cached(SELECT_SALDO).await.unwrap();
+
+    let conn = pg_pool.get().await.unwrap();
+    let select_transacao = conn.prepare_cached(SELECT_TRANSACAO).await.unwrap();
+
+    let conn = pg_pool.get().await.unwrap();
     let limites = conn.query(SELECT_LIMITE, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
-    let app_state = Arc::new(AppState{ pg_pool, limites});
+    let app_state = Arc::new(AppState{ pg_pool, limites, select_saldo, select_transacao});
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
@@ -81,11 +90,11 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await
+            conn.query_one(&state.select_saldo, &[&id]).await
         },
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await
+            conn.query(&state.select_transacao, &[&id]).await
         }
     ).unwrap();
 
