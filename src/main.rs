@@ -101,7 +101,7 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
 }
 
 const UPDATE_SALDO: &str = "UPDATE C SET S = S + $1 WHERE I = $2 RETURNING S";
-const INSERT_TRANSACTION: &str = "INSERT INTO T(I, V, T, D) VALUES($1, $2, $3, $4)";
+const INSERT_TRANSACTION: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
 const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
 const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
 const SELECT_LIMITE: &str = "SELECT L FROM C ORDER BY I ASC";
@@ -130,7 +130,6 @@ pub struct Extrato { pub saldo: Saldo, pub ultimas_transacoes: Vec<Transacao> }
 pub struct Saldo { pub total: i32, pub data_extrato: u64, pub limite: i32 }
 #[derive(serde::Serialize)]
 pub struct Transacao { pub valor: i32, pub tipo: String, pub descricao: String, pub realizada_em: i64 }
-
 pub fn now_monotonic() -> u64 {
     let mut time = libc::timespec {
         tv_sec: 0,
