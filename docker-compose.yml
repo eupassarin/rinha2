@@ -1,5 +1,8 @@
 version: '3.5'
 
+networks:
+  rinhanet:
+
 x-resources-api: &resources-api
   resources:
     limits:
@@ -36,6 +39,8 @@ services:
       HTTP_PORT: 8080
     ports:
       - "8080:8080"
+    networks:
+      - rinhanet
 
   api02:
     <<: *api
@@ -43,11 +48,15 @@ services:
       HTTP_PORT: 8081
     ports:
       - "8081:8081"
+    networks:
+      - rinhanet
 
   nginx:
     image: nginx:latest
     ports:
       - "9999:9999"
+    networks:
+      - rinhanet
     depends_on:
       - api01
       - api02
@@ -60,6 +69,8 @@ services:
     image: postgres
     ports:
       - "5432:5432"
+    networks:
+      - rinhanet
     env_file:
       - .env
     command: |
@@ -80,7 +91,7 @@ services:
     deploy:
       <<: *resources-db
 
-networks:
-  default:
-    driver: bridge
-    name: rinhanet
+#networks:
+#  default:
+#    driver: bridge
+#    name: rinhanet
