@@ -100,16 +100,11 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     )
 }
 
-const UPDATE_SALDO: &str = "UPDATE CLIENTE SET SALDO = SALDO + $1 WHERE ID = $2 RETURNING SALDO";
-const INSERT_TRANSACTION: &str = "INSERT INTO TRANSACAO (CLIENTE_ID, VALOR, TIPO, DESCRICAO)VALUES($1, $2, $3, $4)";
-const SELECT_TRANSACAO: &str = "
-    SELECT valor, tipo, descricao, realizada_em
-    FROM transacao
-    WHERE cliente_id = $1
-    ORDER BY realizada_em DESC LIMIT 10";
-
-const SELECT_SALDO: &str = "SELECT saldo FROM cliente WHERE id = $1";
-const SELECT_LIMITE: &str = "SELECT limite FROM cliente ORDER BY ID ASC";
+const UPDATE_SALDO: &str = "UPDATE C SET S = S + $1 WHERE I = $2 RETURNING S";
+const INSERT_TRANSACTION: &str = "INSERT INTO T(I, V, T, D) VALUES($1, $2, $3, $4)";
+const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
+const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
+const SELECT_LIMITE: &str = "SELECT L FROM C ORDER BY I ASC";
 
 #[derive(serde::Deserialize)]
 pub struct Config {
