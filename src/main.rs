@@ -17,8 +17,14 @@ async fn main() {
     let cfg = Config::from_env().unwrap();
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap();
 
-    let conn = pg_pool.get().await.unwrap();
+    for _ in 0..50 {
+        let conn = pg_pool.get().await.unwrap();
+        task::spawn(async move {
+            let _ = conn.query(SELECT_LIMITE, &[]).await.unwrap();
+        });
+    }
 
+    let conn = pg_pool.get().await.unwrap();
     let limites = conn.query(SELECT_LIMITE, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
