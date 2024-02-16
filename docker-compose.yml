@@ -3,13 +3,13 @@ version: '3.5'
 x-resources-api: &resources-api
   resources:
     limits:
-      cpus: '0.1'
+      cpus: '0.2'
       memory: 50M
 
 x-resources-db: &resources-db
   resources:
     limits:
-      cpus: '1.1'
+      cpus: '0.9'
       memory: 400M
 
 x-resources-nginx: &resources-nginx
@@ -33,7 +33,6 @@ x-api: &api
 services:
   api01:
     <<: *api
-    network_mode: host
     environment:
       HTTP_PORT: 8080
     volumes:
@@ -43,7 +42,6 @@ services:
 
   api02:
     <<: *api
-    network_mode: host
     environment:
       HTTP_PORT: 8081
     volumes:
@@ -53,14 +51,13 @@ services:
 
   nginx:
     image: nginx:latest
-    network_mode: host
     ports:
       - "9999:9999"
     depends_on:
       - api01
       - api02
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.local.conf:/etc/nginx/nginx.conf:ro
       - ./temp/8080:/temp/8080
       - ./temp/8081:/temp/8081
     deploy:
@@ -68,7 +65,6 @@ services:
 
   db:
     image: postgres
-    network_mode: host
     ports:
       - "5432:5432"
     env_file:
@@ -94,5 +90,5 @@ services:
 
 networks:
   default:
-    driver: host
+    driver: bridge
     name: rinhanet
