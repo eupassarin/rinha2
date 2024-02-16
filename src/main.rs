@@ -3,7 +3,7 @@ use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
-use tokio::{net::TcpListener, task};
+use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
@@ -57,7 +57,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     };
 
     let conn = state.pg_pool.get().await.unwrap();
-    match conn.query(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
+    match conn.query_one(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
         Ok(result) => {
             //task::spawn(async move {
                 conn.query(INSERT_TRANSACTION,
@@ -70,7 +70,7 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
             (
                 StatusCode::OK,
                 to_string(&SaldoLimite {
-                    saldo: Ok::<i32, Error>(result[0].get(0)).unwrap(),
+                    saldo: Ok::<i32, Error>(result.get(0)).unwrap(),
                     limite: state.limites[(id - 1) as usize]
                 }).unwrap()
             )
@@ -82,17 +82,17 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
 pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
+
     let conn = state.pg_pool.get().await.unwrap();
 
-    //let (cliente, transacoes) = try_join!(
-        //async {
-            let cliente  =conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await.unwrap();
-        //},
-        //async {
-            //let conn = state.pg_pool.get().await.unwrap();
-            let transacoes = conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await.unwrap();
-        //}
-    //).unwrap();
+    let (cliente, transacoes) = try_join!(
+        async {
+            conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await
+        },
+        async {
+            conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await
+        }
+    ).unwrap();
 
     (StatusCode::OK, to_string(
         &Extrato {
