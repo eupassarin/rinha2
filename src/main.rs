@@ -1,16 +1,13 @@
 use std::{env, sync::Arc};
 use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1};
-use deadpool_postgres::tokio_postgres::Statement;
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
 use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
     pub pg_pool: deadpool_postgres::Pool,
     pub limites: Vec<i32>,
-    pub select_saldo: Statement,
-    pub select_transacao: Statement
 }
 
 #[tokio::main]
@@ -20,24 +17,13 @@ async fn main() {
     let cfg = Config::from_env().unwrap();
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap();
 
-    for _ in 0..50 {
-        let conn = pg_pool.get().await.unwrap();
-        task::spawn(async move {
-            let _ = conn.query(SELECT_LIMITE, &[]).await.unwrap();
-        });
-    }
-
-    let conn = pg_pool.get().await.unwrap();
-    let select_saldo = conn.prepare_cached(SELECT_SALDO).await.unwrap();
-
-    let conn = pg_pool.get().await.unwrap();
-    let select_transacao = conn.prepare_cached(SELECT_TRANSACAO).await.unwrap();
-
     let conn = pg_pool.get().await.unwrap();
     let limites = conn.query(SELECT_LIMITE, &[])
         .await.unwrap().iter().map(|row| row.get(0)).collect();
 
-    let app_state = Arc::new(AppState{ pg_pool, limites, select_saldo, select_transacao});
+    warmup(&pg_pool).await;
+
+    let app_state = Arc::new(AppState{ pg_pool, limites });
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
@@ -48,6 +34,16 @@ async fn main() {
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 
+}
+
+async fn warmup(pg_pool: &Pool) {
+    for _ in 0..500 {
+        let conn = pg_pool.get().await.unwrap();
+        task::spawn(async move {
+            let _ = conn.query(SELECT_LIMITE, &[]).await.unwrap();
+        });
+    }
+    println!("{:?}/{:?}", pg_pool.status().size, pg_pool.status().available);
 }
 
 pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<i16>, transacao: body::Bytes)
@@ -90,11 +86,11 @@ pub async fn get_extrato(State(state): State<Arc<AppState>>, Path(id): Path<i16>
     let (cliente, transacoes) = try_join!(
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query_one(&state.select_saldo, &[&id]).await
+            conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await
         },
         async {
             let conn = state.pg_pool.get().await.unwrap();
-            conn.query(&state.select_transacao, &[&id]).await
+            conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await
         }
     ).unwrap();
 
