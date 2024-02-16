@@ -26,6 +26,8 @@ x-api: &api
       condition: service_healthy
   env_file:
     - .env
+  volumes:
+    - ./temp:/temp
   deploy:
     <<: *resources-api
 
@@ -75,6 +77,7 @@ services:
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
+      - ./temp:/var/run/postgresql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready" ]
       interval: 5s
