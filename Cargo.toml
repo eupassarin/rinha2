@@ -12,6 +12,9 @@ serde_json = "1.0.113"
 config = "0.14.0"
 deadpool-postgres = { version = "0.12.1", features = ["rt_tokio_1","serde"] }
 libc = "0.2.153"
+hyper = "1.1.0"
+hyper-util = "0.1.3"
+tower-service = "0.3.2"
 
 [profile.release]
 codegen-units = 1

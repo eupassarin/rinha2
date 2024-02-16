@@ -1,9 +1,22 @@
 use std::{env, sync::Arc};
+use std::convert::Infallible;
 use std::io::Error;
+use hyper::body::Incoming;
+use std::path::PathBuf;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
+use axum::extract::{connect_info};
+use axum::http::Request;
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
-use tokio::{net::TcpListener, task, try_join};
+use tokio::{task, try_join};
+use tokio::net::{unix::UCred, UnixListener, UnixStream};
+use tower_service::Service;
+
+
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server,
+};
 
 #[tokio::main]
 async fn main() {
@@ -12,14 +25,29 @@ async fn main() {
     let cfg = Config::from_env().unwrap();
     let app_state = Arc::new(cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap());
 
+    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
+    let path = PathBuf::from(format!("/temp/{http_port}"));
+    let _ = tokio::fs::remove_file(&path).await;
+
+    let uds = UnixListener::bind(path.clone()).expect("erro bind");
+
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
         .with_state(app_state);
+    let mut make_service = app.into_make_service_with_connect_info::<UdsConnectInfo>();
 
-    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    loop {
+        let (socket, _remote_addr) = uds.accept().await.expect("erro accept socket");
+        let tower_service = unwrap_infallible(make_service.call(&socket).await);
+        tokio::spawn(async move {
+            let socket = TokioIo::new(socket);
+            let hyper_service =
+                hyper::service::service_fn(move |request: Request<Incoming>| {
+                    tower_service.clone().call(request)
+                });
+        });
+    }
 }
 
 pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>, transacao: body::Bytes)
@@ -112,4 +140,30 @@ pub fn now_monotonic() -> u64 {
     };
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) };
     time.tv_sec as u64
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct UdsConnectInfo {
+    peer_addr: Arc<tokio::net::unix::SocketAddr>,
+    peer_cred: UCred,
+}
+
+impl connect_info::Connected<&UnixStream> for UdsConnectInfo {
+    fn connect_info(target: &UnixStream) -> Self {
+        let peer_addr = target.peer_addr().unwrap();
+        let peer_cred = target.peer_cred().unwrap();
+
+        Self {
+            peer_addr: Arc::new(peer_addr),
+            peer_cred,
+        }
+    }
+}
+
+fn unwrap_infallible<T>(result: Result<T, Infallible>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(err) => match err {},
+    }
 }

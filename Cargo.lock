@@ -25,10 +25,13 @@ dependencies = [
  "config",
  "deadpool-postgres",
  "dotenv",
+ "hyper",
+ "hyper-util",
  "libc",
  "serde",
  "serde_json",
  "tokio",
+ "tower-service",
 ]
 
 [[package]]
