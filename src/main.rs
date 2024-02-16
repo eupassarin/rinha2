@@ -1,22 +1,11 @@
-use std::{env, sync::Arc};
-use std::convert::Infallible;
-use std::io::Error;
-use hyper::body::Incoming;
-use std::path::PathBuf;
-use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
-use axum::extract::{connect_info};
-use axum::http::Request;
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
+use std::{convert::Infallible, env, io::Error, path::PathBuf, sync::Arc};
+use axum::{body, extract::{connect_info, Path, State}, http::StatusCode, response::IntoResponse, routing::{get, post}, Router};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Pool, Runtime::Tokio1};
+use hyper::{body::Incoming, http::Request};
+use hyper_util::{rt::{TokioExecutor, TokioIo}, server};
 use serde_json::{from_slice, to_string};
-use tokio::{task, try_join};
-use tokio::net::{unix::UCred, UnixListener, UnixStream};
+use tokio::{net::unix::UCred, task, try_join, net::{UnixListener, UnixStream}};
 use tower_service::Service;
-
-
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server,
-};
 
 #[tokio::main]
 async fn main() {
@@ -35,10 +24,10 @@ async fn main() {
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
         .with_state(app_state);
-    let mut make_service = app.into_make_service_with_connect_info::<UdsConnectInfo>();
 
+    let mut make_service = app.into_make_service_with_connect_info::<UdsConnectInfo>();
     loop {
-        let (socket, _remote_addr) = uds.accept().await.expect("erro accept socket");
+        let (socket, _remote_addr) = uds.accept().await.unwrap();
         let tower_service = unwrap_infallible(make_service.call(&socket).await);
         tokio::spawn(async move {
             let socket = TokioIo::new(socket);
@@ -46,6 +35,9 @@ async fn main() {
                 hyper::service::service_fn(move |request: Request<Incoming>| {
                     tower_service.clone().call(request)
                 });
+             server::conn::auto::Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(socket, hyper_service)
+                .await.unwrap();
         });
     }
 }
