@@ -1,4 +1,6 @@
 use std::{convert::Infallible, env, io::Error, path::PathBuf, sync::Arc};
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use axum::{body, extract::{connect_info, Path, State}, http::StatusCode, response::IntoResponse, routing::{get, post}, Router};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Pool, Runtime::Tokio1};
 use hyper::{body::Incoming, http::Request};
@@ -18,7 +20,8 @@ async fn main() {
     let path = PathBuf::from(format!("/temp/{http_port}"));
     let _ = tokio::fs::remove_file(&path).await;
 
-    let uds = UnixListener::bind(path.clone()).expect("erro bind");
+    let uds = UnixListener::bind(path.clone()).unwrap();
+    tokio::fs::set_permissions(&path, Permissions::from_mode(0o777)).await.unwrap();
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
