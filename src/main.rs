@@ -1,13 +1,9 @@
-use std::{convert::Infallible, env, io::Error, path::PathBuf, sync::Arc};
-use std::fs::Permissions;
-use std::os::unix::fs::PermissionsExt;
-use axum::{body, extract::{connect_info, Path, State}, http::StatusCode, response::IntoResponse, routing::{get, post}, Router};
-use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Pool, Runtime::Tokio1};
-use hyper::{body::Incoming, http::Request};
-use hyper_util::{rt::{TokioExecutor, TokioIo}, server};
+use std::{env, sync::Arc};
+use std::io::Error;
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
-use tokio::{net::unix::UCred, task, try_join, net::{UnixListener, UnixStream}};
-use tower_service::Service;
+use tokio::{net::TcpListener, task, try_join};
 
 #[tokio::main]
 async fn main() {
@@ -16,33 +12,14 @@ async fn main() {
     let cfg = Config::from_env().unwrap();
     let app_state = Arc::new(cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap());
 
-    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    let path = PathBuf::from(format!("/temp/{http_port}"));
-    let _ = tokio::fs::remove_file(&path).await;
-
-    let uds = UnixListener::bind(path.clone()).unwrap();
-    tokio::fs::set_permissions(&path, Permissions::from_mode(0o777)).await.unwrap();
-
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
         .with_state(app_state);
 
-    let mut make_service = app.into_make_service_with_connect_info::<UdsConnectInfo>();
-    loop {
-        let (socket, _remote_addr) = uds.accept().await.unwrap();
-        let tower_service = unwrap_infallible(make_service.call(&socket).await);
-        tokio::spawn(async move {
-            let socket = TokioIo::new(socket);
-            let hyper_service =
-                hyper::service::service_fn(move |request: Request<Incoming>| {
-                    tower_service.clone().call(request)
-                });
-             server::conn::auto::Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(socket, hyper_service)
-                .await.unwrap();
-        });
-    }
+    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
+    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>, transacao: body::Bytes)
@@ -85,10 +62,10 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
 
     (StatusCode::OK, to_string(
         &Extrato {
-                saldo: Saldo{
-                    total: cliente.get(0),
-                    data_extrato: now_monotonic(),
-                    limite: LIMITES[(id-1) as usize]
+            saldo: Saldo{
+                total: cliente.get(0),
+                data_extrato: now_monotonic(),
+                limite: LIMITES[(id-1) as usize]
             },
             ultimas_transacoes: transacoes.iter().map(|row| Transacao {
                 valor: row.get(0),
@@ -96,7 +73,7 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
                 descricao: row.get(2),
                 realizada_em: row.get::<usize,i64>(3)
             }).collect() }
-        ).unwrap()
+    ).unwrap()
     )
 }
 
@@ -135,30 +112,4 @@ pub fn now_monotonic() -> u64 {
     };
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut time) };
     time.tv_sec as u64
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct UdsConnectInfo {
-    peer_addr: Arc<tokio::net::unix::SocketAddr>,
-    peer_cred: UCred,
-}
-
-impl connect_info::Connected<&UnixStream> for UdsConnectInfo {
-    fn connect_info(target: &UnixStream) -> Self {
-        let peer_addr = target.peer_addr().unwrap();
-        let peer_cred = target.peer_cred().unwrap();
-
-        Self {
-            peer_addr: Arc::new(peer_addr),
-            peer_cred,
-        }
-    }
-}
-
-fn unwrap_infallible<T>(result: Result<T, Infallible>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(err) => match err {},
-    }
 }
