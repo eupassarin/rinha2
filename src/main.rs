@@ -5,6 +5,7 @@ use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, P
 use serde_json::{from_slice, to_string};
 use tokio::{net::TcpListener, task, try_join};
 
+
 #[tokio::main]
 async fn main() {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
@@ -23,7 +24,7 @@ async fn main() {
 }
 
 pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>, transacao: body::Bytes)
-                             -> impl IntoResponse
+    -> impl IntoResponse
 {
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
@@ -36,18 +37,13 @@ pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i1
     match conn.query_one(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
         Ok(result) => {
             task::spawn(async move {
-                conn.query(INSERT_TRANSACTION,
-                           &[&id,
-                               &t.valor,
-                               &t.tipo.to_string(),
-                               &t.descricao])
-                    .await.unwrap();
+                conn.query(INSERT_TRANSACTION, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
             });
             (
                 StatusCode::OK,
                 to_string(&SaldoLimite {
                     saldo: Ok::<i32, Error>(result.get(0)).unwrap(),
-                    limite: [1000_00, 800_00,10000_00,100000_00,5000_00][(id - 1) as usize]
+                    limite: LIMITES[(id - 1) as usize]
                 }).unwrap()
             )
         },
@@ -60,7 +56,6 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let conn = pg_pool.get().await.unwrap();
-
     let (cliente, transacoes) = try_join!(
         async {conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await},
         async {conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await}
@@ -71,7 +66,7 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
                 saldo: Saldo{
                     total: cliente.get(0),
                     data_extrato: now_monotonic(),
-                    limite: [1000_00, 800_00,10000_00,100000_00,5000_00][(id-1) as usize]
+                    limite: LIMITES[(id-1) as usize]
             },
             ultimas_transacoes: transacoes.iter().map(|row| Transacao {
                 valor: row.get(0),
@@ -87,6 +82,7 @@ const UPDATE_SALDO: &str = "UPDATE C SET S = S + $1 WHERE I = $2 RETURNING S";
 const INSERT_TRANSACTION: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
 const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
 const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
+static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
 #[derive(serde::Deserialize)]
 pub struct Config { pub pg: deadpool_postgres::Config }
