@@ -62,6 +62,8 @@ services:
       - api02
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./temp/8080:/temp/8080
+      - ./temp/8081:/temp/8081
     deploy:
       <<: *resources-nginx
 
