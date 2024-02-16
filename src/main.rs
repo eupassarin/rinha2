@@ -6,7 +6,7 @@ use serde_json::{from_slice, to_string};
 use tokio::{net::TcpListener, task, try_join};
 
 pub struct AppState {
-    pub pg_pool: deadpool_postgres::Pool,
+    pub pg_pool: Pool,
     pub limites: Vec<i32>,
 }
 
@@ -59,14 +59,14 @@ pub async fn post_transacoes(State(state): State<Arc<AppState>>, Path(id): Path<
     let conn = state.pg_pool.get().await.unwrap();
     match conn.query_one(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
         Ok(result) => {
-            //task::spawn(async move {
+            task::spawn(async move {
                 conn.query(INSERT_TRANSACTION,
                            &[&id,
                                &t.valor,
                                &t.tipo.to_string(),
                                &t.descricao])
                     .await.unwrap();
-            //});
+            });
             (
                 StatusCode::OK,
                 to_string(&SaldoLimite {
