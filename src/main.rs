@@ -33,7 +33,7 @@ pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i1
     };
 
     let conn = pg_pool.get().await.unwrap();
-    match conn.query_one(UPDATE_SALDO, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &id]).await {
+    match conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await {
         Ok(result) => {
             task::spawn(async move {
                 conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
@@ -55,7 +55,7 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let conn = pg_pool.get().await.unwrap();
-    let (cliente, transacoes) = try_join!(
+    let (saldo, transacoes) = try_join!(
         async {conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await},
         async {conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await}
     ).unwrap();
@@ -63,7 +63,7 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
     (StatusCode::OK, to_string(
         &Extrato {
             saldo: Saldo{
-                total: cliente.get(0),
+                total: saldo.get(0),
                 data_extrato: now_monotonic(),
                 limite: LIMITES[(id-1) as usize]
             },
@@ -76,11 +76,11 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
     ).unwrap()
     )
 }
-
-const UPDATE_SALDO: &str = "UPDATE C SET S = S + $1 WHERE I = $2 RETURNING S";
+const UPDATE_SALDO_SP: &str = "CALL U($1, $2)";
 const INSERT_TRANSACAO: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
 const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
 const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
+
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
 #[derive(serde::Deserialize)]
