@@ -61,7 +61,8 @@ pub async fn post_transacoes(State(app_state): State<Arc<AppState>>, Path(id): P
 
     task::spawn(
         async move {
-            conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await
+            conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
+            //conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await
         }
     );
     (StatusCode::OK, to_string(&SaldoLimite { saldo: saldo + valor, limite: LIMITES[(id - 1) as usize] }).unwrap())
@@ -125,7 +126,6 @@ impl AppState {
                 return;
             }
             drop(mmap);
-            sleep(TIME_SLEEP).await;
         }
     }
 }
