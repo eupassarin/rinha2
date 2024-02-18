@@ -78,7 +78,7 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
 }
 const UPDATE_SALDO_SP: &str = "CALL U($1, $2)";
 const INSERT_TRANSACAO: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
-const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T_C WHERE I = $1 ORDER BY R DESC LIMIT 10";
+const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
 const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
