@@ -20,7 +20,6 @@ FROM scratch
 ARG BINARY_NAME_DEFAULT
 ENV BINARY_NAME=$BINARY_NAME_DEFAULT
 
-ENV RUST_LOG="error,$BINARY_NAME=info"
 COPY --from=builder /build-out/$BINARY_NAME /
 
 CMD ["/api-yt"]

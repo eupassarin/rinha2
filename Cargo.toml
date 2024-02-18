@@ -15,8 +15,13 @@ libc = "0.2.153"
 hyper = "1.1.0"
 hyper-util = "0.1.3"
 tower-service = "0.3.2"
+memmap = "0.7.0"
+bincode = "1.3.2"
+spin = "0.9.8"
 
-[profile.release]
-codegen-units = 1
-lto = false
+#[profile.release]
+#codegen-units = 1
+#lto = false
+#strip = true
+
 
