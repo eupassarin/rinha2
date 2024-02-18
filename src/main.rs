@@ -1,87 +1,71 @@
 use std::{env, sync::Arc};
-use std::fs::{OpenOptions, write};
-use std::time::Duration;
-use axum::{body, extract::{Path, State}, http::StatusCode, response::IntoResponse, Router};
-use axum::routing::{get, post};
-use deadpool_postgres::{GenericClient, Pool, Runtime::Tokio1, tokio_postgres::NoTls};
-use memmap::{MmapMut, MmapOptions};
+use std::io::Error;
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
+use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
-use spin::mutex::Mutex;
-use spin::MutexGuard;
-use tokio::net::TcpListener;
-use tokio::task;
-use tokio::time::sleep;
+use tokio::{net::TcpListener, task, try_join};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
+async fn main() {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
-    let mmap_path = env::var("MMAP_PATH")?;
 
-    let cfg = Config::from_env()?;
-    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
+    let cfg = Config::from_env().unwrap();
+    let app_state = Arc::new(cfg.pg.create_pool(Some(Tokio1), NoTls).unwrap());
 
-    write(mmap_path.clone(), bincode::serialize(&[0;10])?)?;
-    let mmap = unsafe {
-        MmapOptions::new().map_mut(&OpenOptions::new().read(true).write(true).create(true).open(mmap_path)?)?
-    };
-    let spinlock = Mutex::new(mmap);
-
-    let app_state = Arc::new(AppState { pg_pool, spinlock });
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
         .with_state(app_state);
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+    let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
-pub async fn post_transacoes(State(app_state): State<Arc<AppState>>, Path(id): Path<i16>, transacao: body::Bytes)
-    -> impl IntoResponse
+pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>, transacao: body::Bytes)
+                             -> impl IntoResponse
 {
-    if id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
+    if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
     let t = match from_slice::<TransacaoPayload>(&transacao) {
         Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
-    let id_ref = (id - 1) as usize;
-    let valor = if t.tipo == 'd' { -t.valor } else { t.valor };
-
-    let saldo = app_state.recuperar_saldo(id_ref).await;
-    if saldo + valor < -LIMITES[id_ref] { return (StatusCode::UNPROCESSABLE_ENTITY, String::new()) }
-
-    task::spawn(
-        async move {
-            let conn = app_state.pg_pool.get().await.unwrap();
-            conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
-            conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await.unwrap();
-            app_state.atualizar_saldo(id_ref, valor).await;
-        }
-    );
-
-    (StatusCode::OK, to_string(&SaldoLimite { saldo: saldo + valor, limite: LIMITES[(id - 1) as usize] }).unwrap())
+    let conn = pg_pool.get().await.unwrap();
+    match conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await {
+        Ok(result) => {
+            task::spawn(async move {
+                conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
+            });
+            (
+                StatusCode::OK,
+                to_string(&SaldoLimite {
+                    saldo: Ok::<i32, Error>(result.get(0)).unwrap(),
+                    limite: LIMITES[(id - 1) as usize]
+                }).unwrap()
+            )
+        },
+        Err(_) => (StatusCode::UNPROCESSABLE_ENTITY, String::new())
+    }
 }
-pub async fn get_extrato(State(app_state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
+
+pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) -> impl IntoResponse  {
 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
-    let id_ref = (id - 1) as usize;
-    let saldo = app_state.recuperar_saldo(id_ref).await;
-
-    let conn = app_state.pg_pool.get().await.unwrap();
-    let transacoes = conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await.unwrap();
+    let conn = pg_pool.get().await.unwrap();
+    let (saldo, transacoes) = try_join!(
+        async {conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await},
+        async {conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await}
+    ).unwrap();
 
     (StatusCode::OK, to_string(
         &Extrato {
             saldo: Saldo{
-                total: saldo,
+                total: saldo.get(0),
                 data_extrato: now_monotonic(),
-                limite: LIMITES[id_ref]
+                limite: LIMITES[(id-1) as usize]
             },
             ultimas_transacoes: transacoes.iter().map(|row| Transacao {
                 valor: row.get(0),
@@ -89,41 +73,19 @@ pub async fn get_extrato(State(app_state): State<Arc<AppState>>, Path(id): Path<
                 descricao: row.get(2),
                 realizada_em: row.get::<usize,i64>(3)
             }).collect() }
-        ).unwrap()
+    ).unwrap()
     )
 }
-
 const UPDATE_SALDO_SP: &str = "CALL U($1, $2)";
 const INSERT_TRANSACAO: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
-const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
-static LIMITES: &'static [i32] = &[1000_00, 800_00, 10000_00, 100000_00, 5000_00];
+const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T_C WHERE I = $1 ORDER BY R DESC LIMIT 10";
+const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
 
-pub struct AppState { pub pg_pool: Pool, pub spinlock: Mutex<MmapMut> }
-
-impl AppState {
-    pub async fn recuperar_saldo(&self, id_ref: usize) -> i32 {
-        bincode::deserialize::<[i32; 5]>(&self.spinlock.lock()).unwrap()[id_ref]
-    }
-
-    pub async fn atualizar_saldo(&self, id_ref: usize, valor: i32) {
-        loop {
-            let mut mmap = self.spinlock.lock();
-            let mmap_decoded = bincode::deserialize::<[i32; 10]>(&mmap).unwrap();
-            if mmap_decoded[id_ref+5] == 0 {
-                mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[1]).unwrap());
-                drop(mmap);
-                mmap = self.spinlock.lock();
-                mmap[id_ref * 4..(id_ref+1) * 4].copy_from_slice(&bincode::serialize(&(mmap_decoded[id_ref] + valor)).unwrap());
-                mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[0]).unwrap());
-                return;
-            }
-            drop(mmap);
-        }
-    }
-}
+static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
 #[derive(serde::Deserialize)]
 pub struct Config { pub pg: deadpool_postgres::Config }
+
 impl Config {
     pub fn from_env() -> Result<Self, config::ConfigError> {
         config::Config::builder()
@@ -132,6 +94,7 @@ impl Config {
             .try_deserialize()
     }
 }
+
 #[derive(serde::Deserialize)]
 pub struct TransacaoPayload { pub valor: i32, pub tipo: char, pub descricao: String }
 #[derive(serde::Serialize)]
