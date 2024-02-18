@@ -12,7 +12,6 @@ use tokio::net::TcpListener;
 use tokio::task;
 use tokio::time::sleep;
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
@@ -101,28 +100,14 @@ static LIMITES: &'static [i32] = &[1000_00, 800_00, 10000_00, 100000_00, 5000_00
 
 pub struct AppState { pub pg_pool: Pool, pub spinlock: Mutex<MmapMut> }
 
-
 const  SLP: usize = 4 * 4;
 const ELP: usize = 5 * 4;
 
 const TIME_SLEEP: Duration = Duration::from_nanos(100);
 
 impl AppState {
-
     pub async fn recuperar_saldo(&self, id_ref: usize) -> i32 {
-        loop {
-            let mut mmap = self.spinlock.lock();
-            let mmap_decoded = bincode::deserialize::<[i32; 6]>(&mmap).unwrap();
-            if mmap_decoded[5] == 0 {
-                Self::lock(&mut mmap);
-                drop(mmap);
-                let saldo = mmap_decoded[id_ref];
-                self.unlock();
-                return saldo;
-            }
-            drop(mmap);
-            sleep(TIME_SLEEP).await;
-        }
+        bincode::deserialize::<[i32; 6]>(&self.spinlock.lock()).unwrap()[id_ref]
     }
 
     fn lock(mmap: &mut MutexGuard<MmapMut>) {
