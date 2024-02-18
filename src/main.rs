@@ -59,12 +59,11 @@ pub async fn post_transacoes(State(app_state): State<Arc<AppState>>, Path(id): P
     let conn = app_state.pg_pool.get().await.unwrap();
     conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
 
-    task::spawn(
-        async move {
-            conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
-            //conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await
-        }
-    );
+    // task::spawn(
+    //     async move {
+    //         conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await
+    //     }
+    // );
     (StatusCode::OK, to_string(&SaldoLimite { saldo: saldo + valor, limite: LIMITES[(id - 1) as usize] }).unwrap())
 }
 pub async fn get_extrato(State(app_state): State<Arc<AppState>>, Path(id): Path<i16>) -> impl IntoResponse  {
