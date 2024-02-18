@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
-    write(mmap_path.clone(),  bincode::serialize(&[0;6])?)?;
+    write(mmap_path.clone(), bincode::serialize(&[0;10])?)?;
     let mmap = unsafe {
         MmapOptions::new().map_mut(&OpenOptions::new().read(true).write(true).create(true).open(mmap_path)?)?
     };
@@ -100,32 +100,28 @@ static LIMITES: &'static [i32] = &[1000_00, 800_00, 10000_00, 100000_00, 5000_00
 
 pub struct AppState { pub pg_pool: Pool, pub spinlock: Mutex<MmapMut> }
 
-const  SLP: usize = 4 * 4;
-const ELP: usize = 5 * 4;
-
-const TIME_SLEEP: Duration = Duration::from_nanos(100);
+const TIME_SLEEP: Duration = Duration::from_nanos(10);
 
 impl AppState {
     pub async fn recuperar_saldo(&self, id_ref: usize) -> i32 {
-        bincode::deserialize::<[i32; 6]>(&self.spinlock.lock()).unwrap()[id_ref]
+        bincode::deserialize::<[i32; 5]>(&self.spinlock.lock()).unwrap()[id_ref]
     }
 
-    fn lock(mmap: &mut MutexGuard<MmapMut>) {
-        mmap[SLP..ELP].copy_from_slice(&bincode::serialize(&[1]).unwrap());
+    fn lock(mmap: &mut MutexGuard<MmapMut>, id_ref: usize) {
+        mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[1]).unwrap());
     }
-    fn unlock(&self) {
-        self.spinlock.lock()[SLP..ELP].copy_from_slice(&bincode::serialize(&[0]).unwrap());
+    fn unlock(mmap: &mut MutexGuard<MmapMut>, id_ref: usize) {
+        mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[0]).unwrap());
     }
 
     pub async fn atualizar_saldo(&self, id_ref: usize, valor: i32) {
         loop {
             let mut mmap = self.spinlock.lock();
-            let mmap_decoded = bincode::deserialize::<[i32; 6]>(&mmap).unwrap();
-            if mmap_decoded[5] == 0 {
-                Self::lock(&mut mmap);
-                drop(mmap);
-                self.spinlock.lock()[id_ref * 4..(id_ref+1) * 4].copy_from_slice(&bincode::serialize(&(mmap_decoded[id_ref] + valor)).unwrap());
-                self.unlock();
+            let mmap_decoded = bincode::deserialize::<[i32; 10]>(&mmap).unwrap();
+            if mmap_decoded[id_ref+5] == 0 {
+                Self::lock(&mut mmap, id_ref);
+                mmap[id_ref * 4..(id_ref+1) * 4].copy_from_slice(&bincode::serialize(&(mmap_decoded[id_ref] + valor)).unwrap());
+                Self::unlock(&mut mmap, id_ref);
                 return;
             }
             drop(mmap);
