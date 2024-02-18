@@ -100,18 +100,9 @@ static LIMITES: &'static [i32] = &[1000_00, 800_00, 10000_00, 100000_00, 5000_00
 
 pub struct AppState { pub pg_pool: Pool, pub spinlock: Mutex<MmapMut> }
 
-const TIME_SLEEP: Duration = Duration::from_nanos(10);
-
 impl AppState {
     pub async fn recuperar_saldo(&self, id_ref: usize) -> i32 {
         bincode::deserialize::<[i32; 5]>(&self.spinlock.lock()).unwrap()[id_ref]
-    }
-
-    fn lock(mmap: &mut MutexGuard<MmapMut>, id_ref: usize) {
-        mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[1]).unwrap());
-    }
-    fn unlock(mmap: &mut MutexGuard<MmapMut>, id_ref: usize) {
-        mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[0]).unwrap());
     }
 
     pub async fn atualizar_saldo(&self, id_ref: usize, valor: i32) {
@@ -119,9 +110,11 @@ impl AppState {
             let mut mmap = self.spinlock.lock();
             let mmap_decoded = bincode::deserialize::<[i32; 10]>(&mmap).unwrap();
             if mmap_decoded[id_ref+5] == 0 {
-                Self::lock(&mut mmap, id_ref);
+                mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[1]).unwrap());
+                drop(mmap);
+                mmap = self.spinlock.lock();
                 mmap[id_ref * 4..(id_ref+1) * 4].copy_from_slice(&bincode::serialize(&(mmap_decoded[id_ref] + valor)).unwrap());
-                Self::unlock(&mut mmap, id_ref);
+                mmap[(id_ref+5) * 4..(id_ref+1+5) * 4].copy_from_slice(&bincode::serialize(&[0]).unwrap());
                 return;
             }
             drop(mmap);
