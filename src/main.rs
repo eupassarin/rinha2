@@ -3,7 +3,7 @@ use std::io::Error;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Router, body, response::IntoResponse};
 use deadpool_postgres::{tokio_postgres::NoTls, GenericClient, Runtime::Tokio1, Pool};
 use serde_json::{from_slice, to_string};
-use tokio::{net::TcpListener, task, try_join};
+use tokio::{net::TcpListener, try_join};
 
 #[tokio::main]
 async fn main() {
@@ -32,12 +32,11 @@ pub async fn post_transacoes(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i1
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
-    let conn = pg_pool.get().await.unwrap();
-    match conn.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await {
+    let conn_1 = pg_pool.get().await.unwrap();
+    match conn_1.query_one(UPDATE_SALDO_SP, &[&(if t.tipo == 'd' { -t.valor } else { t.valor }), &(id as i32)]).await {
         Ok(result) => {
-            task::spawn(async move {
-                conn.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
-            });
+            let conn_2 = pg_pool.get().await.unwrap();
+            conn_2.query(INSERT_TRANSACAO, &[&id, &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
             (
                 StatusCode::OK,
                 to_string(&SaldoLimite {
@@ -54,10 +53,16 @@ pub async fn get_extrato(State(pg_pool): State<Arc<Pool>>, Path(id): Path<i16>) 
 
     if id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
 
-    let conn = pg_pool.get().await.unwrap();
+
     let (saldo, transacoes) = try_join!(
-        async {conn.query_one(&conn.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await},
-        async {conn.query(&conn.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await}
+        async {
+            let conn_1 = pg_pool.get().await.unwrap();
+            conn_1.query_one(&conn_1.prepare_cached(SELECT_SALDO).await.unwrap(), &[&id]).await
+        },
+        async {
+            let conn_2 = pg_pool.get().await.unwrap();
+            conn_2.query(&conn_2.prepare_cached(SELECT_TRANSACAO).await.unwrap(), &[&id]).await
+        }
     ).unwrap();
 
     (StatusCode::OK, to_string(
@@ -80,7 +85,6 @@ const UPDATE_SALDO_SP: &str = "CALL U($1, $2)";
 const INSERT_TRANSACAO: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
 const SELECT_TRANSACAO: &str = "SELECT V, P, D, R FROM T WHERE I = $1 ORDER BY R DESC LIMIT 10";
 const SELECT_SALDO: &str = "SELECT S FROM C WHERE I = $1";
-
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
 #[derive(serde::Deserialize)]
