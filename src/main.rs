@@ -127,7 +127,7 @@ impl RinhaDatabase {
     }
 
     pub fn iniciar_trans(&self)  {
-        let mut t = 10;
+        let mut t = 3;
         loop {
             let mut controle = self.controle.lock().unwrap();
             if controle[0] == 0 {
@@ -136,7 +136,6 @@ impl RinhaDatabase {
             }
             t = t - 1;
             if t == 0 {
-                debug!("Timeout");
                 controle[0] = 0;
                 continue;
             }
@@ -263,7 +262,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
 
-    debug!("Recebendo transação do cliente {}", cliente_id);
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
 
     let t = match from_slice::<TransacaoPayload>(&transacao) {
