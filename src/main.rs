@@ -1,6 +1,5 @@
 use std::{env, sync::Arc};
 use std::error::Error;
-use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::sleep;
@@ -32,26 +31,19 @@ impl ClienteRow { pub fn new( saldo: i32) -> Self {
     } }
 impl Row for ClienteRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        let mut id = [0u8; 2];
-        id.copy_from_slice(&slice[0..2]);
-        let mut saldo = [0u8; 4];
-        saldo.copy_from_slice(&slice[2..6]);
-        let mut lock = [0u8; 1];
-        lock.copy_from_slice(&slice[6..7]);
-        ClienteRow { id: u16::from_ne_bytes(id), saldo: i32::from_ne_bytes(saldo), lock: lock[0] == 1}
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            saldo: i32::from_ne_bytes(slice[2..6].try_into().unwrap()),
+            lock: slice[6] == 1,
+        }
     }
 
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(7);
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.saldo.to_ne_bytes());
-        bytes.extend_from_slice(&[self.lock as u8]);
+        bytes.push(self.lock as u8);
         bytes
-    }
-}
-impl Display for ClienteRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ClienteRow {{ id: {}, saldo: {}, lock: {} }}", self.id, self.saldo, self.lock)
     }
 }
 
@@ -73,26 +65,14 @@ impl TransacaoRow {
 }
 impl Row for TransacaoRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        let mut id = [0u8; 2];
-        id.copy_from_slice(&slice[0..2]);
-        let mut cliente_id = [0u8; 2];
-        cliente_id.copy_from_slice(&slice[2..4]);
-        let mut valor = [0u8; 4];
-        valor.copy_from_slice(&slice[4..8]);
-        let tipo = slice[8] as char;
-        let descricao = String::from_utf8_lossy(&slice[9..19]).to_string();
-        let mut realizada_em = [0u8; 8];
-        realizada_em.copy_from_slice(&slice[19..27]);
-        let mut lock = [0u8; 1];
-        lock.copy_from_slice(&slice[27..28]);
-        TransacaoRow {
-            id: u16::from_ne_bytes(id),
-            cliente_id: i16::from_ne_bytes(cliente_id),
-            valor: i32::from_ne_bytes(valor),
-            tipo,
-            descricao,
-            realizada_em: u64::from_ne_bytes(realizada_em),
-            lock: lock[0] == 1
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            cliente_id: i16::from_ne_bytes(slice[2..4].try_into().unwrap()),
+            valor: i32::from_ne_bytes(slice[4..8].try_into().unwrap()),
+            tipo: slice[8] as char,
+            descricao: String::from_utf8_lossy(&slice[9..19]).to_string(),
+            realizada_em: u64::from_ne_bytes(slice[19..27].try_into().unwrap()),
+            lock: slice[27] == 1,
         }
     }
 
@@ -101,17 +81,11 @@ impl Row for TransacaoRow {
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.cliente_id.to_ne_bytes());
         bytes.extend_from_slice(&self.valor.to_ne_bytes());
-        bytes.extend_from_slice(&[self.tipo as u8]);
+        bytes.push(self.tipo as u8);
         bytes.extend_from_slice(self.descricao.as_bytes());
         bytes.extend_from_slice(&self.realizada_em.to_ne_bytes());
-        bytes.extend_from_slice(&[self.lock as u8]);
+        bytes.push(self.lock as u8);
         bytes
-    }
-}
-impl Display for TransacaoRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
-               self.id, self.cliente_id, self.valor, self.tipo, self.descricao, self.realizada_em, self.lock)
     }
 }
 
@@ -139,7 +113,7 @@ impl RinhaDatabase {
             unsafe { Mutex::new(MmapMut::map_mut(&file).unwrap()) }
         }
 
-        let controle_file = abrir_e_inicializar_arquivo("./temp/controle.db", 1024);
+        let controle_file = abrir_e_inicializar_arquivo("./temp/controle.db", 1);
         let cliente_file = abrir_e_inicializar_arquivo("./temp/cliente.db", 1024);
         let transacao_file = abrir_e_inicializar_arquivo("./temp/transacao.db", 1024 * 10 * 100);
 
@@ -150,26 +124,10 @@ impl RinhaDatabase {
         }
     }
 
-    pub fn imprimir_clientes(&self) {
-        for i in 1..=5 {
-            println!("{:?}", self.recuperar_cliente(i));
-        }
-    }
-
-    pub fn imprimir_transacoes(&self, cliente_id: i16) {
-        let transacoes = self.recuperar_transacoes(cliente_id);
-        for transacao in transacoes {
-            println!("{:?}", transacao);
-        }
-    }
-
     pub fn iniciar_trans(&self)  {
         loop {
             let mut controle = self.controle_mmap.lock().unwrap();
-            if controle[0] == 0 {
-                controle[0] = 1;
-                return;
-            }
+            if controle[0] == 0 { controle[0] = 1;return; }
             sleep(TIME_SLEEP);
         }
     }
@@ -208,12 +166,6 @@ impl RinhaDatabase {
 
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
         transacao_mmap[offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
-    }
-
-    pub fn recuperar_cliente(&self, id: i16) -> ClienteRow {
-        let cliente_mmap = self.cliente_mmap.lock().unwrap();
-        let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-        ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW])
     }
 
     pub fn recuperar_saldo(&self, id: i16) -> i32 {
@@ -273,7 +225,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-
         .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
@@ -310,9 +261,7 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
 }
 
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>) -> impl IntoResponse {
-
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
-
     (StatusCode::OK, to_string(
         &Extrato {
             saldo: Saldo{
