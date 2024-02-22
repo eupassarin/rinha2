@@ -130,15 +130,19 @@ impl RinhaDatabase {
         let mut t = 10;
         loop {
             let mut controle = self.controle.lock().unwrap();
-            if t == 0 { debug!("TIMEOUT!!!!!!!!!"); }
-            if controle[0] == 0 || t == 0 {
+            if controle[0] == 0 {
                 controle[0] = 1;
+
                 return;
             }
-            debug!("Esperando...{t}");
+            //debug!("Esperando...{t}");
             t = t - 1;
-            sleep(Duration::from_nanos(random::<u64>() % 10));
-
+            if t == 0 {
+                debug!("Timeout");
+                controle[0] = 0;
+                continue;
+            }
+            sleep(Duration::from_nanos(10));
         }
     }
 
