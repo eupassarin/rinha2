@@ -5,24 +5,18 @@ edition = "2021"
 
 [dependencies]
 axum = { version  = "0.7.4", features = ["tokio"] }
-axum-macros = "0.4.1"
 tokio = { version = "1.36.0", features = ["full"] }
 dotenv = "0.15.0"
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
 config = "0.14.0"
 deadpool-postgres = { version = "0.12.1", features = ["rt_tokio_1","serde"] }
-libc = "0.2.153"
 hyper = "1.1.0"
 hyper-util = "0.1.3"
 tower-service = "0.3.2"
 memmap = "0.7.0"
-bincode = "1.3.2"
-spin = "0.9.8"
-maplit = "1.0.2"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-log = "0.4.20"
 
 #[profile.release]
 #codegen-units = 1
