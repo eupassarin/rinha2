@@ -20,7 +20,6 @@ x-resources-nginx: &resources-nginx
 
 x-api: &api
   build: .
-  ipc: host
   env_file:
     - .env
   volumes:
@@ -55,30 +54,30 @@ services:
     deploy:
       <<: *resources-nginx
 
-  db:
-    image: postgres
-    ports:
-      - "5432:5432"
-    env_file:
-      - .env
-    command: |
-      postgres 
-      -c config_file=/docker-entrypoint-initdb.d/postgresql.conf
-      -c fsync=off
-      -c synchronous_commit=off
-      -c full_page_writes=off
-    volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-      - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
-      - ./temp:/var/run/postgresql
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready" ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-    deploy:
-      <<: *resources-db
+#  db:
+#    image: postgres
+#    ports:
+#      - "5432:5432"
+#    env_file:
+#      - .env
+#    command: |
+#      postgres
+#      -c config_file=/docker-entrypoint-initdb.d/postgresql.conf
+#      -c fsync=off
+#      -c synchronous_commit=off
+#      -c full_page_writes=off
+#    volumes:
+#      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+#      - ./postgresql.conf:/docker-entrypoint-initdb.d/postgresql.conf
+#      - ./temp:/var/run/postgresql
+#    healthcheck:
+#      test: [ "CMD-SHELL", "pg_isready" ]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 20
+#      start_period: 10s
+#    deploy:
+#      <<: *resources-db
 
 networks:
   default:

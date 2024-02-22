@@ -1,14 +1,14 @@
 @id = 1
-@port = 9999
+@port = 8081
 
 ### POST /clientes/{{id}}/transacoes
 POST http://localhost:{{port}}/clientes/{{id}}/transacoes
 Content-Type: application/json
 
 {
-  "valor": 100000,
+  "valor": 1,
   "tipo": "d",
-  "descricao": "debitar"
+  "descricao": "segunda"
 }
 
 ### POST /clientes/{{id}}/transacoes
@@ -16,10 +16,23 @@ POST http://localhost:{{port}}/clientes/{{id}}/transacoes
 Content-Type: application/json
 
 {
-  "valor": 100,
+  "valor": 1,
   "tipo": "c",
-  "descricao": "creditar"
+  "descricao": "X_8080_X"
 }
 
 ### GET /clientes/{{id}}/extrato
 GET http://localhost:{{port}}/clientes/{{id}}/extrato
+
+
+
+### GET /lock
+GET http://localhost:{{port}}/lock
+
+### POST /lock
+POST http://localhost:{{port}}/lock
+
+### POST /unlock
+POST http://localhost:{{port}}/unlock
+
+
