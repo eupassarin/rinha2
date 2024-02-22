@@ -13,36 +13,31 @@ use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{info, Level};
 
-const TIME_SLEEP: Duration = Duration::from_nanos(1);
-
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
 const TAMANHO_SEQ: usize = 2;
-pub trait Row {
-    fn from_bytes(slice: &[u8]) -> Self;
-    fn to_bytes(&self) -> Vec<u8>;
-}
+pub trait Row { fn from_bytes(slice: &[u8]) -> Self; fn to_bytes(&self) -> Vec<u8>; }
 
 const TAMANHO_CLIENTE_ROW: usize = 7;
 #[derive(Debug)]
 pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
-impl ClienteRow { pub fn new( saldo: i32) -> Self {
-        Self { id: 0,  saldo, lock: false }
-    } }
+impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
 impl Row for ClienteRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        Self {
-            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
-            saldo: i32::from_ne_bytes(slice[2..6].try_into().unwrap()),
-            lock: slice[6] == 1,
-        }
+        let mut id = [0u8; 2];
+        id.copy_from_slice(&slice[0..2]);
+        let mut saldo = [0u8; 4];
+        saldo.copy_from_slice(&slice[2..6]);
+        let mut lock = [0u8; 1];
+        lock.copy_from_slice(&slice[6..7]);
+        ClienteRow { id: u16::from_ne_bytes(id), saldo: i32::from_ne_bytes(saldo), lock: lock[0] == 1}
     }
 
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(7);
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.saldo.to_ne_bytes());
-        bytes.push(self.lock as u8);
+        bytes.extend_from_slice(&[self.lock as u8]);
         bytes
     }
 }
@@ -65,14 +60,26 @@ impl TransacaoRow {
 }
 impl Row for TransacaoRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        Self {
-            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
-            cliente_id: i16::from_ne_bytes(slice[2..4].try_into().unwrap()),
-            valor: i32::from_ne_bytes(slice[4..8].try_into().unwrap()),
-            tipo: slice[8] as char,
-            descricao: String::from_utf8_lossy(&slice[9..19]).to_string(),
-            realizada_em: u64::from_ne_bytes(slice[19..27].try_into().unwrap()),
-            lock: slice[27] == 1,
+        let mut id = [0u8; 2];
+        id.copy_from_slice(&slice[0..2]);
+        let mut cliente_id = [0u8; 2];
+        cliente_id.copy_from_slice(&slice[2..4]);
+        let mut valor = [0u8; 4];
+        valor.copy_from_slice(&slice[4..8]);
+        let tipo = slice[8] as char;
+        let descricao = String::from_utf8_lossy(&slice[9..19]).to_string();
+        let mut realizada_em = [0u8; 8];
+        realizada_em.copy_from_slice(&slice[19..27]);
+        let mut lock = [0u8; 1];
+        lock.copy_from_slice(&slice[27..28]);
+        TransacaoRow {
+            id: u16::from_ne_bytes(id),
+            cliente_id: i16::from_ne_bytes(cliente_id),
+            valor: i32::from_ne_bytes(valor),
+            tipo,
+            descricao,
+            realizada_em: u64::from_ne_bytes(realizada_em),
+            lock: lock[0] == 1
         }
     }
 
@@ -81,23 +88,22 @@ impl Row for TransacaoRow {
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.cliente_id.to_ne_bytes());
         bytes.extend_from_slice(&self.valor.to_ne_bytes());
-        bytes.push(self.tipo as u8);
+        bytes.extend_from_slice(&[self.tipo as u8]);
         bytes.extend_from_slice(self.descricao.as_bytes());
         bytes.extend_from_slice(&self.realizada_em.to_ne_bytes());
-        bytes.push(self.lock as u8);
+        bytes.extend_from_slice(&[self.lock as u8]);
         bytes
     }
 }
 
 #[derive(Debug)]
 pub struct RinhaDatabase {
-    pub controle_mmap: Mutex<MmapMut>,
-    pub cliente_mmap: Mutex<MmapMut>,
-    pub transacao_mmap: Mutex<MmapMut>,
+    pub controle: Mutex<MmapMut>,
+    pub cliente: Mutex<MmapMut>,
+    pub transacao: Mutex<MmapMut>,
 }
 impl RinhaDatabase {
     pub fn new() -> Self {
-
         fn abrir_e_inicializar_arquivo(path: &str, size: u64) -> File {
             let file = OpenOptions::new()
                 .read(true)
@@ -108,41 +114,39 @@ impl RinhaDatabase {
             file.set_len(size).unwrap();
             file
         }
-
         fn inicializar_mmap(file: &File) -> Mutex<MmapMut> {
             unsafe { Mutex::new(MmapMut::map_mut(&file).unwrap()) }
         }
-
-        let controle_file = abrir_e_inicializar_arquivo("./temp/controle.db", 1);
+        let controle_file = abrir_e_inicializar_arquivo("./temp/controle.db", 1024);
         let cliente_file = abrir_e_inicializar_arquivo("./temp/cliente.db", 1024);
         let transacao_file = abrir_e_inicializar_arquivo("./temp/transacao.db", 1024 * 10 * 100);
-
         Self {
-            controle_mmap: inicializar_mmap(&controle_file),
-            cliente_mmap: inicializar_mmap(&cliente_file),
-            transacao_mmap: inicializar_mmap(&transacao_file),
+            controle: inicializar_mmap(&controle_file),
+            cliente: inicializar_mmap(&cliente_file),
+            transacao: inicializar_mmap(&transacao_file),
         }
     }
 
     pub fn iniciar_trans(&self)  {
         loop {
-            let mut controle = self.controle_mmap.lock().unwrap();
-            if controle[0] == 0 { controle[0] = 1;return; }
-            sleep(TIME_SLEEP);
+            let mut controle = self.controle.lock().unwrap();
+            if controle[0] == 0 {
+                controle[0] = 1;
+                return;
+            }
+            sleep(Duration::from_nanos(1));
         }
     }
 
     pub fn finalizar_trans(&self) {
-        let mut controle = self.controle_mmap.lock().unwrap();
+        let mut controle = self.controle.lock().unwrap();
         controle[0] = 0;
     }
 
     pub fn adicionar_cliente(&self, cliente_row: &mut ClienteRow) {
-        let mut cliente_mmap = self.cliente_mmap.lock().unwrap();
-
+        let mut cliente_mmap = self.cliente.lock().unwrap();
         let (id, proximo_id) = Self::proximo_id(&mut cliente_mmap);
         cliente_row.id = proximo_id;
-
         let offset = (id as usize) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW].copy_from_slice(&cliente_row.to_bytes());
     }
@@ -157,25 +161,22 @@ impl RinhaDatabase {
     }
 
     pub fn adicionar_transacao(&self, mut transacao_row: TransacaoRow) {
-        let mut transacao_mmap = self.transacao_mmap.lock().unwrap();
-
+        let mut transacao_mmap = self.transacao.lock().unwrap();
         let (id, proximo_id) = Self::proximo_id(&mut transacao_mmap);
-
         transacao_row.id = proximo_id;
         transacao_row.descricao = format!("{: <10}", transacao_row.descricao).chars().take(10).collect();
-
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
         transacao_mmap[offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
     }
 
     pub fn recuperar_saldo(&self, id: i16) -> i32 {
-        let cliente_mmap = self.cliente_mmap.lock().unwrap();
+        let cliente_mmap = self.cliente.lock().unwrap();
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
     }
 
     pub fn recuperar_transacoes(&self, cliente_id: i16) -> Vec<TransacaoRow> {
-        let transacao_mmap = self.transacao_mmap.lock().unwrap();
+        let transacao_mmap = self.transacao.lock().unwrap();
         let num_transacoes = u16::from_ne_bytes([transacao_mmap[0], transacao_mmap[1]]);
         let mut transacoes = Vec::new();
         for i in (1..=num_transacoes).rev() {
@@ -190,7 +191,7 @@ impl RinhaDatabase {
     }
 
     pub fn transacionar(&self, id: i16, novo_saldo: i32) -> i32 {
-        let mut cliente_mmap = self.cliente_mmap.lock().unwrap();
+        let mut cliente_mmap = self.cliente.lock().unwrap();
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ + 2;
         cliente_mmap[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
         novo_saldo
@@ -201,7 +202,6 @@ impl RinhaDatabase {
 pub struct AppState { pub pg_pool: Pool, pub db: RinhaDatabase}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
     let collector = tracing_subscriber::fmt().with_max_level(Level::INFO).finish();
@@ -212,35 +212,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
-    let rinha_db = RinhaDatabase::new();
-
-    rinha_db.iniciar_trans();
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.finalizar_trans();
+    let db = RinhaDatabase::new();
+    db.iniciar_trans();
+    db.adicionar_cliente(&mut ClienteRow::new(0));
+    db.adicionar_cliente(&mut ClienteRow::new(0));
+    db.adicionar_cliente(&mut ClienteRow::new(0));
+    db.adicionar_cliente(&mut ClienteRow::new(0));
+    db.adicionar_cliente(&mut ClienteRow::new(0));
+    db.finalizar_trans();
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
+        .with_state(Arc::new(AppState { pg_pool , db }));
 
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
-
     info!("Escutando na porta {}...", http_port);
-
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())
 }
 
 
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
-
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
-
     let t = match from_slice::<TransacaoPayload>(&transacao) {
         Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
@@ -275,8 +270,8 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
                     tipo: row.tipo.to_string(),
                     descricao: str::trim(&row.descricao),
                     realizada_em: row.realizada_em
-            }).collect()}
-        ).unwrap()
+                }).collect()}
+    ).unwrap()
     )
 }
 
@@ -307,25 +302,8 @@ async fn shutdown_signal() {
         std::fs::remove_file("/temp/controle.db").ok();
         std::fs::remove_file("/temp/cliente.db").ok();
         std::fs::remove_file("/temp/transacao.db").ok();
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        signal::ctrl_c().await.unwrap();
     };
-
-    #[cfg(unix)]
-        let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-        let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
+    tokio::select! {_ = ctrl_c => {},}
 }
 
