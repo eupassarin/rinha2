@@ -20,6 +20,7 @@ x-resources-nginx: &resources-nginx
 
 x-api: &api
   build: .
+  ipc: host
   env_file:
     - .env
   volumes:

@@ -1,5 +1,6 @@
 use std::{env, sync::Arc};
 use std::error::Error;
+use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::sleep;
@@ -10,8 +11,9 @@ use deadpool_postgres::{Pool, Runtime::Tokio1, tokio_postgres::NoTls};
 use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
-use tokio::signal;
-use tracing::{info, Level};
+use tracing::{debug, info, Level};
+
+const TIME_SLEEP: Duration = Duration::from_nanos(1);
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
@@ -41,18 +43,15 @@ impl Row for ClienteRow {
         bytes
     }
 }
+impl Display for ClienteRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ClienteRow {{ id: {}, saldo: {}, lock: {} }}", self.id, self.saldo, self.lock)
+    }
+}
 
 const TAMANHO_TRANSACAO_ROW: usize = 28;
 #[derive(Debug)]
-pub struct TransacaoRow {
-    pub id: u16,
-    pub cliente_id: i16,
-    pub valor: i32,
-    pub tipo: char,
-    pub descricao: String,
-    pub realizada_em: u64,
-    pub lock: bool
-}
+pub struct TransacaoRow { pub id: u16, pub cliente_id: i16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64, pub lock: bool }
 impl TransacaoRow {
     pub fn new(cliente_id: i16 , valor: i32, tipo: char, descricao: &str, realizada_em: u64) -> Self {
         Self { id: 0, cliente_id, valor, tipo, descricao: descricao.to_string(), realizada_em, lock: false }
@@ -95,35 +94,34 @@ impl Row for TransacaoRow {
         bytes
     }
 }
+impl Display for TransacaoRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
+               self.id, self.cliente_id, self.valor, self.tipo, self.descricao, self.realizada_em, self.lock)
+    }
+}
 
 #[derive(Debug)]
-pub struct RinhaDatabase {
-    pub controle: Mutex<MmapMut>,
-    pub cliente: Mutex<MmapMut>,
-    pub transacao: Mutex<MmapMut>,
-}
+pub struct RinhaDatabase { pub controle: Mutex<MmapMut>, pub cliente: Mutex<MmapMut>, pub transacao: Mutex<MmapMut>, }
 impl RinhaDatabase {
-    pub fn new() -> Self {
-        fn abrir_e_inicializar_arquivo(path: &str, size: u64) -> File {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(path)
-                .unwrap();
-            file.set_len(size).unwrap();
-            file
-        }
-        fn inicializar_mmap(file: &File) -> Mutex<MmapMut> {
-            unsafe { Mutex::new(MmapMut::map_mut(&file).unwrap()) }
-        }
-        let controle_file = abrir_e_inicializar_arquivo("./temp/controle.db", 1024);
-        let cliente_file = abrir_e_inicializar_arquivo("./temp/cliente.db", 1024);
-        let transacao_file = abrir_e_inicializar_arquivo("./temp/transacao.db", 1024 * 10 * 100);
+    pub fn new(controle_file: &File, cliente_file: &File, transacao_file: &File) -> Self {
         Self {
             controle: inicializar_mmap(&controle_file),
             cliente: inicializar_mmap(&cliente_file),
             transacao: inicializar_mmap(&transacao_file),
+        }
+    }
+
+    pub fn imprimir_clientes(&self) {
+        for i in 1..=5 {
+            println!("{:?}", self.recuperar_cliente(i));
+        }
+    }
+
+    pub fn imprimir_transacoes(&self, cliente_id: i16) {
+        let transacoes = self.recuperar_transacoes(cliente_id);
+        for transacao in transacoes {
+            println!("{:?}", transacao);
         }
     }
 
@@ -134,7 +132,7 @@ impl RinhaDatabase {
                 controle[0] = 1;
                 return;
             }
-            sleep(Duration::from_nanos(1));
+            sleep(TIME_SLEEP);
         }
     }
 
@@ -145,8 +143,10 @@ impl RinhaDatabase {
 
     pub fn adicionar_cliente(&self, cliente_row: &mut ClienteRow) {
         let mut cliente_mmap = self.cliente.lock().unwrap();
+
         let (id, proximo_id) = Self::proximo_id(&mut cliente_mmap);
         cliente_row.id = proximo_id;
+
         let offset = (id as usize) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW].copy_from_slice(&cliente_row.to_bytes());
     }
@@ -162,11 +162,20 @@ impl RinhaDatabase {
 
     pub fn adicionar_transacao(&self, mut transacao_row: TransacaoRow) {
         let mut transacao_mmap = self.transacao.lock().unwrap();
+
         let (id, proximo_id) = Self::proximo_id(&mut transacao_mmap);
+
         transacao_row.id = proximo_id;
         transacao_row.descricao = format!("{: <10}", transacao_row.descricao).chars().take(10).collect();
+
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
         transacao_mmap[offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
+    }
+
+    pub fn recuperar_cliente(&self, id: i16) -> ClienteRow {
+        let cliente_mmap = self.cliente.lock().unwrap();
+        let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
+        ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW])
     }
 
     pub fn recuperar_saldo(&self, id: i16) -> i32 {
@@ -202,40 +211,52 @@ impl RinhaDatabase {
 pub struct AppState { pub pg_pool: Pool, pub db: RinhaDatabase}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
-    let collector = tracing_subscriber::fmt().with_max_level(Level::INFO).finish();
+    let collector = tracing_subscriber::fmt().with_max_level(Level::DEBUG).finish();
     tracing::subscriber::set_global_default(collector).unwrap();
 
     info!("Iniciando servidor...");
+    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
+    debug!("Porta HTTP: {}", http_port);
 
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
-    let db = RinhaDatabase::new();
-    db.iniciar_trans();
-    db.adicionar_cliente(&mut ClienteRow::new(0));
-    db.adicionar_cliente(&mut ClienteRow::new(0));
-    db.adicionar_cliente(&mut ClienteRow::new(0));
-    db.adicionar_cliente(&mut ClienteRow::new(0));
-    db.adicionar_cliente(&mut ClienteRow::new(0));
-    db.finalizar_trans();
+    let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
+    debug!("Caminho do banco de dados: {}", db_path);
+    let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 1);
+    let cliente_file = abrir_e_inicializar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
+    let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 100);
+
+    let rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, &transacao_file);
+
+    rinha_db.iniciar_trans();
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.finalizar_trans();
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(Arc::new(AppState { pg_pool , db }));
+        .route("/lock", get(get_lock).post(post_lock))
+        .route("/unlock", post(post_unlock))
+        .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
 
-    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
     info!("Escutando na porta {}...", http_port);
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
-
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
+
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
+
     let t = match from_slice::<TransacaoPayload>(&transacao) {
         Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
@@ -271,8 +292,37 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
                     descricao: str::trim(&row.descricao),
                     realizada_em: row.realizada_em
                 }).collect()}
-    ).unwrap()
-    )
+    ).unwrap())
+}
+
+pub async fn get_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+}
+
+pub async fn post_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    s.db.controle.lock().unwrap()[0] = 1;
+    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+}
+
+pub async fn post_unlock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    s.db.controle.lock().unwrap()[0] = 0;
+    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+}
+
+pub fn  abrir_e_inicializar_arquivo(path: &str, size: u64) -> File {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+    file.set_len(size).unwrap();
+    file
+}
+
+pub fn inicializar_mmap(file: &File) -> Mutex<MmapMut> {
+    unsafe { Mutex::new(MmapMut::map_mut(&file).unwrap()) }
 }
 
 #[derive(serde::Deserialize)]
@@ -296,14 +346,3 @@ pub struct Saldo { pub total: i32, pub data_extrato: u64, pub limite: i32 }
 #[derive(serde::Serialize)]
 pub struct Transacao<'a> { pub valor: i32, pub tipo: String, pub descricao: &'a str, pub realizada_em: u64 }
 pub fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 }
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        std::fs::remove_file("/temp/controle.db").ok();
-        std::fs::remove_file("/temp/cliente.db").ok();
-        std::fs::remove_file("/temp/transacao.db").ok();
-        signal::ctrl_c().await.unwrap();
-    };
-    tokio::select! {_ = ctrl_c => {},}
-}
-
