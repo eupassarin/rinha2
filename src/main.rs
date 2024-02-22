@@ -13,7 +13,7 @@ use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
 use tracing::{debug, info, Level};
 
-const TIME_SLEEP: Duration = Duration::from_nanos(1);
+const TIME_SLEEP: Duration = Duration::from_nanos(100);
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
