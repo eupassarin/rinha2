@@ -130,7 +130,7 @@ impl RinhaDatabase {
         let mut t = 10;
         loop {
             let mut controle = self.controle.lock().unwrap();
-            if t == 0 { debug!("Timeout..."); }
+            if t == 0 { debug!("TIMEOUT!!!!!!!!!"); }
             if controle[0] == 0 || t == 0 {
                 controle[0] = 1;
                 return;
