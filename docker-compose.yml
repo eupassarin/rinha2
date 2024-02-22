@@ -50,10 +50,8 @@ services:
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
-      api01:
-        condition: service_healthy
-      api02:
-        condition: service_healthy
+      - api01
+      - api02
     ports:
       - "9999:9999"
     ulimits:
