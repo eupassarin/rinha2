@@ -17,6 +17,7 @@ tower-service = "0.3.2"
 memmap = "0.7.0"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
+rand = "0.8.5"
 
 #[profile.release]
 #codegen-units = 1
