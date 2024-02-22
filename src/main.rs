@@ -132,6 +132,7 @@ impl RinhaDatabase {
                 controle[0] = 1;
                 return;
             }
+            debug!("Esperando...");
             sleep(TIME_SLEEP);
         }
     }
