@@ -12,9 +12,6 @@ use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
 use tracing::{debug, info, Level};
-use rand::random;
-
-const TIME_SLEEP: Duration = Duration::from_nanos(1);
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
@@ -27,20 +24,18 @@ pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
 impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
 impl Row for ClienteRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        let mut id = [0u8; 2];
-        id.copy_from_slice(&slice[0..2]);
-        let mut saldo = [0u8; 4];
-        saldo.copy_from_slice(&slice[2..6]);
-        let mut lock = [0u8; 1];
-        lock.copy_from_slice(&slice[6..7]);
-        ClienteRow { id: u16::from_ne_bytes(id), saldo: i32::from_ne_bytes(saldo), lock: lock[0] == 1}
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            saldo: i32::from_ne_bytes(slice[2..6].try_into().unwrap()),
+            lock: slice[6] == 1,
+        }
     }
 
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(7);
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.saldo.to_ne_bytes());
-        bytes.extend_from_slice(&[self.lock as u8]);
+        bytes.push(self.lock as u8);
         bytes
     }
 }
@@ -60,26 +55,14 @@ impl TransacaoRow {
 }
 impl Row for TransacaoRow {
     fn from_bytes(slice: &[u8]) -> Self {
-        let mut id = [0u8; 2];
-        id.copy_from_slice(&slice[0..2]);
-        let mut cliente_id = [0u8; 2];
-        cliente_id.copy_from_slice(&slice[2..4]);
-        let mut valor = [0u8; 4];
-        valor.copy_from_slice(&slice[4..8]);
-        let tipo = slice[8] as char;
-        let descricao = String::from_utf8_lossy(&slice[9..19]).to_string();
-        let mut realizada_em = [0u8; 8];
-        realizada_em.copy_from_slice(&slice[19..27]);
-        let mut lock = [0u8; 1];
-        lock.copy_from_slice(&slice[27..28]);
-        TransacaoRow {
-            id: u16::from_ne_bytes(id),
-            cliente_id: i16::from_ne_bytes(cliente_id),
-            valor: i32::from_ne_bytes(valor),
-            tipo,
-            descricao,
-            realizada_em: u64::from_ne_bytes(realizada_em),
-            lock: lock[0] == 1
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            cliente_id: i16::from_ne_bytes(slice[2..4].try_into().unwrap()),
+            valor: i32::from_ne_bytes(slice[4..8].try_into().unwrap()),
+            tipo: slice[8] as char,
+            descricao: String::from_utf8_lossy(&slice[9..19]).to_string(),
+            realizada_em: u64::from_ne_bytes(slice[19..27].try_into().unwrap()),
+            lock: slice[27] == 1,
         }
     }
 
@@ -88,13 +71,14 @@ impl Row for TransacaoRow {
         bytes.extend_from_slice(&self.id.to_ne_bytes());
         bytes.extend_from_slice(&self.cliente_id.to_ne_bytes());
         bytes.extend_from_slice(&self.valor.to_ne_bytes());
-        bytes.extend_from_slice(&[self.tipo as u8]);
+        bytes.push(self.tipo as u8);
         bytes.extend_from_slice(self.descricao.as_bytes());
         bytes.extend_from_slice(&self.realizada_em.to_ne_bytes());
-        bytes.extend_from_slice(&[self.lock as u8]);
+        bytes.push(self.lock as u8);
         bytes
     }
 }
+
 impl Display for TransacaoRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
@@ -221,18 +205,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
 
-    let collector = tracing_subscriber::fmt().with_max_level(Level::DEBUG).finish();
-    tracing::subscriber::set_global_default(collector).unwrap();
+    //let collector = tracing_subscriber::fmt().with_max_level(Level::DEBUG).finish();
+    //tracing::subscriber::set_global_default(collector).unwrap();
 
-    info!("Iniciando servidor...");
+    //info!("Iniciando servidor...");
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    debug!("Porta HTTP: {}", http_port);
+    //debug!("Porta HTTP: {}", http_port);
 
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
     let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
-    debug!("Caminho do banco de dados: {}", db_path);
+    //debug!("Caminho do banco de dados: {}", db_path);
     let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
     let cliente_file = abrir_e_inicializar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
     let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 1000);
@@ -255,7 +239,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
 
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
-    info!("Escutando na porta {}...", http_port);
+    //info!("Escutando na porta {}...", http_port);
     axum::serve(listener, app).await?;
     Ok(())
 }
