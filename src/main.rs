@@ -132,17 +132,15 @@ impl RinhaDatabase {
             let mut controle = self.controle.lock().unwrap();
             if controle[0] == 0 {
                 controle[0] = 1;
-
                 return;
             }
-            //debug!("Esperando...{t}");
             t = t - 1;
             if t == 0 {
                 debug!("Timeout");
                 controle[0] = 0;
                 continue;
             }
-            sleep(Duration::from_nanos(10));
+            sleep(Duration::from_nanos(1));
         }
     }
 
@@ -238,7 +236,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     debug!("Caminho do banco de dados: {}", db_path);
     let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
     let cliente_file = abrir_e_inicializar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
-    let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 100);
+    let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 1000);
 
     let rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, &transacao_file);
 
