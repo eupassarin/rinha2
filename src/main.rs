@@ -12,8 +12,9 @@ use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
 use tracing::{debug, info, Level};
+use rand::random;
 
-const TIME_SLEEP: Duration = Duration::from_nanos(100);
+const TIME_SLEEP: Duration = Duration::from_nanos(1);
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
@@ -126,14 +127,17 @@ impl RinhaDatabase {
     }
 
     pub fn iniciar_trans(&self)  {
+        let mut t = 10;
         loop {
             let mut controle = self.controle.lock().unwrap();
-            if controle[0] == 0 {
+            if controle[0] == 0 || t == 0 {
                 controle[0] = 1;
                 return;
             }
             debug!("Esperando...");
-            sleep(TIME_SLEEP);
+            t = t - 1;
+            sleep(Duration::from_nanos(random::<u64>() % 10));
+
         }
     }
 
@@ -227,7 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
     debug!("Caminho do banco de dados: {}", db_path);
-    let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 1);
+    let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
     let cliente_file = abrir_e_inicializar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
     let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 100);
 
