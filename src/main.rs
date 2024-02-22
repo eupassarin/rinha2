@@ -256,6 +256,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
 
+    debug!("Recebendo transação do cliente {}", cliente_id);
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
 
     let t = match from_slice::<TransacaoPayload>(&transacao) {
