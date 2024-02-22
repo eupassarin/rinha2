@@ -3,20 +3,20 @@ version: '3.5'
 x-resources-api: &resources-api
   resources:
     limits:
-      cpus: '0.3'
-      memory: 50M
+      cpus: '0.5'
+      memory: 200M
 
-x-resources-db: &resources-db
-  resources:
-    limits:
-      cpus: '0.6'
-      memory: 400M
+#x-resources-db: &resources-db
+#  resources:
+#    limits:
+#      cpus: '0.6'
+#      memory: 400M
 
 x-resources-nginx: &resources-nginx
   resources:
     limits:
-      cpus: '0.3'
-      memory: 50M
+      cpus: '0.5'
+      memory: 100M
 
 x-api: &api
   build: .
