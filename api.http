@@ -1,4 +1,4 @@
-@id = 2
+@id = 1
 @port = 80
 
 ### POST /clientes/{{id}}/transacoes
@@ -18,7 +18,7 @@ Content-Type: application/json
 {
   "valor": 1,
   "tipo": "c",
-  "descricao": "M"
+  "descricao": "11"
 }
 
 ### GET /clientes/{{id}}/extrato
@@ -27,12 +27,12 @@ GET http://localhost:{{port}}/clientes/{{id}}/extrato
 
 
 ### GET /lock
-GET http://localhost:{{port}}/lock
+GET http://localhost:{{port}}/lock/{{id}}
 
 ### POST /lock
-POST http://localhost:{{port}}/lock
+POST http://localhost:{{port}}/lock/{{id}}
 
 ### POST /unlock
-POST http://localhost:{{port}}/unlock
+POST http://localhost:{{port}}/unlock/{{id}}
 
 
