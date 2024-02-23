@@ -23,7 +23,6 @@ impl Row for ClienteRow {
             lock: slice[6] == 1,
         }
     }
-
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(7);
         bytes.extend_from_slice(&self.id.to_ne_bytes());
@@ -69,19 +68,11 @@ impl RinhaDatabase {
         Self {
             controle: unsafe { MmapMut::map_mut(&controle_file).unwrap() },
             cliente: unsafe { MmapMut::map_mut(&cliente_file).unwrap() },
-            transacao: unsafe {
-                vec![
-                    MmapMut::map_mut(&transacoes_file[0]).unwrap(),
-                    MmapMut::map_mut(&transacoes_file[1]).unwrap(),
-                    MmapMut::map_mut(&transacoes_file[2]).unwrap(),
-                    MmapMut::map_mut(&transacoes_file[3]).unwrap(),
-                    MmapMut::map_mut(&transacoes_file[4]).unwrap(),
-                ]
-            },
+            transacao: unsafe { transacoes_file.iter().map(|f| MmapMut::map_mut(f).unwrap()).collect() },
         }
     }
     pub fn abrir_trans(&mut self) {
-        let mut t = 3;
+        let mut t = 10;
         loop {
             if self.controle[0] == 0 { self.controle[0] = 1; return; }
             t -= 1;
@@ -129,7 +120,7 @@ impl RinhaDatabase {
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
         self.transacao[transacao_row.cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
     }
-    pub fn recuperar_saldo(&self, cliente_id: u16) -> i32 {
+    pub fn saldo(&self, cliente_id: u16) -> i32 {
         let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         ClienteRow::from_bytes(&self.cliente[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
     }
@@ -155,19 +146,13 @@ pub struct AppState { pub pg_pool: Pool, pub db: Mutex<RinhaDatabase>}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
-
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
-
     let rinha_db = criar_db();
-
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .route("/lock/:id", get(get_lock).post(post_lock))
-        .route("/unlock/:id", post(post_unlock))
         .with_state(Arc::new(AppState { pg_pool , db: Mutex::new(rinha_db) }));
-
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
     axum::serve(listener, app).await?;
@@ -175,17 +160,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>, transacao: body::Bytes) -> impl IntoResponse  {
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
-
     let t = match from_slice::<TransacaoPayload>(&transacao) {
         Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
-
     let limite = LIMITES[(cliente_id - 1) as usize];
-
     let mut db = s.db.lock().unwrap();
     db.abrir_trans_cliente(cliente_id);
-    let saldo_antigo = db.recuperar_saldo(cliente_id);
+    let saldo_antigo = db.saldo(cliente_id);
     if t.tipo == 'd' && saldo_antigo - t.valor < -limite {
         db.fechar_trans_cliente(cliente_id);
         return (StatusCode::UNPROCESSABLE_ENTITY, String::new());
@@ -194,7 +176,6 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
     db.transacionar(cliente_id, novo_saldo);
     db.adicionar_transacao(TransacaoRow::new(cliente_id, t.valor, t.tipo, t.descricao.as_str(), now()));
     db.fechar_trans_cliente(cliente_id);
-
     (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite }).unwrap())
 }
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
@@ -202,11 +183,7 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
     let db = s.db.lock().unwrap();
     (StatusCode::OK, to_string(
         &Extrato {
-            saldo: Saldo{
-                total: db.recuperar_saldo(cliente_id),
-                data_extrato: now(),
-                limite: LIMITES[(cliente_id -1) as usize]
-            },
+            saldo: Saldo{ total: db.saldo(cliente_id), data_extrato: now(), limite: LIMITES[(cliente_id -1) as usize] },
             ultimas_transacoes: db.recuperar_transacoes(cliente_id).iter()
                 .map(|row| Transacao {
                     valor: row.valor,
@@ -216,23 +193,8 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
                 }).collect()}
     ).unwrap())
 }
-pub async fn get_lock(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
-    let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-    (StatusCode::OK, s.db.lock().unwrap().cliente[offset..offset + TAMANHO_CLIENTE_ROW][6].to_string())
-}
-pub async fn post_lock(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
-    let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-    s.db.lock().unwrap().cliente[offset..offset + TAMANHO_CLIENTE_ROW][6] = 1;
-    (StatusCode::OK, s.db.lock().unwrap().cliente[offset..offset + TAMANHO_CLIENTE_ROW][6].to_string())
-}
-pub async fn post_unlock(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
-    let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-    s.db.lock().unwrap().cliente[offset..offset + TAMANHO_CLIENTE_ROW][6] = 0;
-    (StatusCode::OK, s.db.lock().unwrap().cliente[offset..offset + TAMANHO_CLIENTE_ROW][6].to_string())
-}
 pub fn criar_arquivo(path: &str, size: u64) -> File {
-    let file = OpenOptions::new().read(true).write(true).create(true)
-        .truncate(true).open(path).unwrap();
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).unwrap();
     file.set_len(size).unwrap();
     file
 }
@@ -240,21 +202,10 @@ fn criar_db() -> RinhaDatabase {
     let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
     let controle_file = criar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
     let cliente_file = criar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
-    let transacoes_file =
-        vec![criar_arquivo(format!("{db_path}/transacao_1.db").as_str(), 1024 * 10 * 200),
-             criar_arquivo(format!("{db_path}/transacao_2.db").as_str(), 1024 * 10 * 200),
-             criar_arquivo(format!("{db_path}/transacao_3.db").as_str(), 1024 * 10 * 200),
-             criar_arquivo(format!("{db_path}/transacao_4.db").as_str(), 1024 * 10 * 200),
-             criar_arquivo(format!("{db_path}/transacao_5.db").as_str(), 1024 * 10 * 200)
-        ];
-
+    let transacoes_file = (1..=5).map(|i| criar_arquivo(format!("{db_path}/transacao_{i}.db").as_str(), 1024 * 10 * 200)).collect();
     let mut rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, transacoes_file);
     rinha_db.abrir_trans();
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    for _ in 1..=5 { rinha_db.adicionar_cliente(&mut ClienteRow::new(0));}
     rinha_db.fechar_trans();
     rinha_db
 }
