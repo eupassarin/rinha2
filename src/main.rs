@@ -1,17 +1,14 @@
 use std::{env, sync::Arc};
 use std::error::Error;
-use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::sync::{Mutex};
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use axum::{body, extract::{Path, State}, http::StatusCode, response::IntoResponse, Router, routing::{get, post}};
 use deadpool_postgres::{Pool, Runtime::Tokio1, tokio_postgres::NoTls};
 use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
-use tracing::{debug, info, Level};
 
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
 
@@ -38,11 +35,6 @@ impl Row for ClienteRow {
         bytes
     }
 }
-// impl Display for ClienteRow {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "ClienteRow {{ id: {}, saldo: {}, lock: {} }}", self.id, self.saldo, self.lock)
-//     }
-// }
 
 const TAMANHO_TRANSACAO_ROW: usize = 28;
 pub struct TransacaoRow { pub id: u16, pub cliente_id: i16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64, pub lock: bool }
@@ -77,13 +69,6 @@ impl Row for TransacaoRow {
     }
 }
 
-// impl Display for TransacaoRow {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
-//                self.id, self.cliente_id, self.valor, self.tipo, self.descricao, self.realizada_em, self.lock)
-//     }
-// }
-
 pub struct RinhaDatabase { pub controle: MmapMut, pub cliente: MmapMut, pub transacao: Vec<MmapMut> }
 impl RinhaDatabase {
     pub fn new(controle_file: &File, cliente_file: &File, transacoes_file: Vec<File>) -> Self {
@@ -101,20 +86,6 @@ impl RinhaDatabase {
             },
         }
     }
-
-    // pub fn imprimir_clientes(&self) {
-    //     for i in 1..=5 {
-    //         println!("{:?}", self.recuperar_cliente(i));
-    //     }
-    // }
-    //
-    // pub fn imprimir_transacoes(&self, cliente_id: i16) {
-    //     let transacoes = self.recuperar_transacoes(cliente_id);
-    //     for transacao in transacoes {
-    //         println!("{:?}", transacao);
-    //     }
-    // }
-
     pub fn abrir_trans(&mut self)  {
         let mut t = 3;
         loop {
@@ -124,18 +95,15 @@ impl RinhaDatabase {
             sleep(Duration::from_nanos(1));
         }
     }
-
     pub fn fechar_trans(&mut self) {
         self.controle[0] = 0;
     }
-
     pub fn adicionar_cliente(&mut self, cliente_row: &mut ClienteRow) {
         let (id, proximo_id) = Self::proximo_id(&mut self.cliente);
         cliente_row.id = proximo_id;
         let offset = (id as usize) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         let _ = &self.cliente[offset..offset + TAMANHO_CLIENTE_ROW].copy_from_slice(&cliente_row.to_bytes());
     }
-
     fn proximo_id(mmap: &mut MmapMut) -> (u16, u16) {
         let id = u16::from_ne_bytes([mmap[0], mmap[1]]);
         let proximo_id = id + 1;
@@ -143,7 +111,6 @@ impl RinhaDatabase {
         mmap[1] = proximo_id.to_ne_bytes()[1];
         (id, proximo_id)
     }
-
     pub fn adicionar_transacao(&mut self, mut transacao_row: TransacaoRow) {
         let (id, proximo_id) = Self::proximo_id(&mut self.transacao[transacao_row.cliente_id as usize - 1]);
         transacao_row.id = proximo_id;
@@ -151,32 +118,18 @@ impl RinhaDatabase {
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
         self.transacao[transacao_row.cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
     }
-
-    // pub fn recuperar_cliente(&self, id: i16) -> ClienteRow {
-    //     let cliente_mmap = self.cliente.lock().unwrap();
-    //     let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-    //     ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW])
-    // }
-
     pub fn recuperar_saldo(&self, id: i16) -> i32 {
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
         ClienteRow::from_bytes(&self.cliente[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
     }
-
     pub fn recuperar_transacoes(&self, cliente_id: i16) -> Vec<TransacaoRow> {
-        let num_transacoes = u16::from_ne_bytes([self.transacao[cliente_id as usize - 1][0], self.transacao[cliente_id as usize - 1][1]]);
         let mut transacoes = Vec::new();
-        for i in (1..=num_transacoes).rev() {
+        for i in (1..=10).rev() {
             let offset = (i - 1) as usize * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
-            let transacao = TransacaoRow::from_bytes(&self.transacao[cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW]);
-            if transacao.cliente_id == cliente_id {
-                transacoes.push(transacao);
-                if transacoes.len() == 10  { break; }
-            }
+            transacoes.push(TransacaoRow::from_bytes(&self.transacao[cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW]));
         }
         transacoes
     }
-
     pub fn transacionar(&mut self, id: i16, novo_saldo: i32)  {
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ + 2;
         let _ = &self.cliente[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
@@ -186,50 +139,20 @@ impl RinhaDatabase {
 pub struct AppState { pub pg_pool: Pool, pub db: Mutex<RinhaDatabase>}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
-
-    //let collector = tracing_subscriber::fmt().with_max_level(Level::DEBUG).finish();
-    //tracing::subscriber::set_global_default(collector).unwrap();
-
-    //info!("Iniciando servidor...");
-    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
-    //debug!("Porta HTTP: {}", http_port);
 
     let cfg = Config::from_env()?;
     let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
 
-    let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
-    //debug!("Caminho do banco de dados: {}", db_path);
-    let controle_file = criar(format!("{db_path}/controle.db").as_str(), 3);
-    let cliente_file = criar(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
-    let transacoes_file =
-        vec![criar(format!("{db_path}/transacao_1.db").as_str(), 1024 * 10 * 200),
-             criar(format!("{db_path}/transacao_2.db").as_str(), 1024 * 10 * 200),
-             criar(format!("{db_path}/transacao_3.db").as_str(), 1024 * 10 * 200),
-             criar(format!("{db_path}/transacao_4.db").as_str(), 1024 * 10 * 200),
-             criar(format!("{db_path}/transacao_5.db").as_str(), 1024 * 10 * 200)
-    ];
-
-    let mut rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, transacoes_file);
-
-    rinha_db.abrir_trans();
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.fechar_trans();
+    let rinha_db = criar_db();
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        // .route("/lock", get(get_lock).post(post_lock))
-        // .route("/unlock", post(post_unlock))
         .with_state(Arc::new(AppState { pg_pool , db: Mutex::new(rinha_db) }));
 
+    let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
-    //info!("Escutando na porta {}...", http_port);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -278,25 +201,34 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
     ).unwrap())
 }
 
-// pub async fn get_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-// }
-//
-// pub async fn post_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-//     s.db.controle.lock().unwrap()[0] = 1;
-//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-// }
-//
-// pub async fn post_unlock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-//     s.db.controle.lock().unwrap()[0] = 0;
-//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-// }
-
-pub fn criar(path: &str, size: u64) -> File {
+pub fn criar_arquivo(path: &str, size: u64) -> File {
     let file = OpenOptions::new().read(true).write(true).create(true)
         .truncate(true).open(path).unwrap();
     file.set_len(size).unwrap();
     file
+}
+
+fn criar_db() -> RinhaDatabase {
+    let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
+    let controle_file = criar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
+    let cliente_file = criar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
+    let transacoes_file =
+        vec![criar_arquivo(format!("{db_path}/transacao_1.db").as_str(), 1024 * 10 * 200),
+             criar_arquivo(format!("{db_path}/transacao_2.db").as_str(), 1024 * 10 * 200),
+             criar_arquivo(format!("{db_path}/transacao_3.db").as_str(), 1024 * 10 * 200),
+             criar_arquivo(format!("{db_path}/transacao_4.db").as_str(), 1024 * 10 * 200),
+             criar_arquivo(format!("{db_path}/transacao_5.db").as_str(), 1024 * 10 * 200)
+        ];
+
+    let mut rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, transacoes_file);
+    rinha_db.abrir_trans();
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
+    rinha_db.fechar_trans();
+    rinha_db
 }
 
 #[derive(serde::Deserialize)]
