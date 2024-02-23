@@ -123,10 +123,12 @@ impl RinhaDatabase {
         ClienteRow::from_bytes(&self.cliente[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
     }
     pub fn recuperar_transacoes(&self, cliente_id: i16) -> Vec<TransacaoRow> {
+        let t_data = &self.transacao[cliente_id as usize - 1];
+        let num_transacoes = u16::from_ne_bytes([t_data[0], t_data[1]]).min(10);
         let mut transacoes = Vec::new();
-        for i in (1..=10).rev() {
+        for i in (1..=num_transacoes).rev() {
             let offset = (i - 1) as usize * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
-            transacoes.push(TransacaoRow::from_bytes(&self.transacao[cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW]));
+            transacoes.push(TransacaoRow::from_bytes(&t_data[offset..offset + TAMANHO_TRANSACAO_ROW]));
         }
         transacoes
     }
