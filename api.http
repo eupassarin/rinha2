@@ -1,5 +1,5 @@
 @id = 1
-@port = 8081
+@port = 80
 
 ### POST /clientes/{{id}}/transacoes
 POST http://localhost:{{port}}/clientes/{{id}}/transacoes

@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,7 +19,6 @@ const TAMANHO_SEQ: usize = 2;
 pub trait Row { fn from_bytes(slice: &[u8]) -> Self; fn to_bytes(&self) -> Vec<u8>; }
 
 const TAMANHO_CLIENTE_ROW: usize = 7;
-#[derive(Debug)]
 pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
 impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
 impl Row for ClienteRow {
@@ -39,14 +38,13 @@ impl Row for ClienteRow {
         bytes
     }
 }
-impl Display for ClienteRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ClienteRow {{ id: {}, saldo: {}, lock: {} }}", self.id, self.saldo, self.lock)
-    }
-}
+// impl Display for ClienteRow {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "ClienteRow {{ id: {}, saldo: {}, lock: {} }}", self.id, self.saldo, self.lock)
+//     }
+// }
 
 const TAMANHO_TRANSACAO_ROW: usize = 28;
-#[derive(Debug)]
 pub struct TransacaoRow { pub id: u16, pub cliente_id: i16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64, pub lock: bool }
 impl TransacaoRow {
     pub fn new(cliente_id: i16 , valor: i32, tipo: char, descricao: &str, realizada_em: u64) -> Self {
@@ -79,109 +77,98 @@ impl Row for TransacaoRow {
     }
 }
 
-impl Display for TransacaoRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
-               self.id, self.cliente_id, self.valor, self.tipo, self.descricao, self.realizada_em, self.lock)
-    }
-}
+// impl Display for TransacaoRow {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "TransacaoRow {{ id: {}, cliente_id: {}, valor: {}, tipo: {}, descricao: {}, realizada_em: {}, lock: {} }}",
+//                self.id, self.cliente_id, self.valor, self.tipo, self.descricao, self.realizada_em, self.lock)
+//     }
+// }
 
-#[derive(Debug)]
-pub struct RinhaDatabase { pub controle: Mutex<MmapMut>, pub cliente: Mutex<MmapMut>, pub transacao: Mutex<MmapMut>, }
+pub struct RinhaDatabase { pub controle: MmapMut, pub cliente: MmapMut, pub transacao: Vec<MmapMut> }
 impl RinhaDatabase {
-    pub fn new(controle_file: &File, cliente_file: &File, transacao_file: &File) -> Self {
+    pub fn new(controle_file: &File, cliente_file: &File, transacoes_file: Vec<File>) -> Self {
         Self {
-            controle: inicializar_mmap(&controle_file),
-            cliente: inicializar_mmap(&cliente_file),
-            transacao: inicializar_mmap(&transacao_file),
+            controle: unsafe { MmapMut::map_mut(&controle_file).unwrap() },
+            cliente: unsafe { MmapMut::map_mut(&cliente_file).unwrap() },
+            transacao: unsafe {
+                vec![
+                    MmapMut::map_mut(&transacoes_file[0]).unwrap(),
+                    MmapMut::map_mut(&transacoes_file[1]).unwrap(),
+                    MmapMut::map_mut(&transacoes_file[2]).unwrap(),
+                    MmapMut::map_mut(&transacoes_file[3]).unwrap(),
+                    MmapMut::map_mut(&transacoes_file[4]).unwrap(),
+                ]
+            },
         }
     }
 
-    pub fn imprimir_clientes(&self) {
-        for i in 1..=5 {
-            println!("{:?}", self.recuperar_cliente(i));
-        }
-    }
+    // pub fn imprimir_clientes(&self) {
+    //     for i in 1..=5 {
+    //         println!("{:?}", self.recuperar_cliente(i));
+    //     }
+    // }
+    //
+    // pub fn imprimir_transacoes(&self, cliente_id: i16) {
+    //     let transacoes = self.recuperar_transacoes(cliente_id);
+    //     for transacao in transacoes {
+    //         println!("{:?}", transacao);
+    //     }
+    // }
 
-    pub fn imprimir_transacoes(&self, cliente_id: i16) {
-        let transacoes = self.recuperar_transacoes(cliente_id);
-        for transacao in transacoes {
-            println!("{:?}", transacao);
-        }
-    }
-
-    pub fn iniciar_trans(&self)  {
+    pub fn abrir_trans(&mut self)  {
         let mut t = 3;
         loop {
-            let mut controle = self.controle.lock().unwrap();
-            if controle[0] == 0 {
-                controle[0] = 1;
-                return;
-            }
-            t = t - 1;
-            if t == 0 {
-                controle[0] = 0;
-                continue;
-            }
+            if self.controle[0] == 0 { self.controle[0] = 1; return; }
+            t -= 1;
+            if t == 0 { self.controle[0] = 0; continue; }
             sleep(Duration::from_nanos(1));
         }
     }
 
-    pub fn finalizar_trans(&self) {
-        let mut controle = self.controle.lock().unwrap();
-        controle[0] = 0;
+    pub fn fechar_trans(&mut self) {
+        self.controle[0] = 0;
     }
 
-    pub fn adicionar_cliente(&self, cliente_row: &mut ClienteRow) {
-        let mut cliente_mmap = self.cliente.lock().unwrap();
-
-        let (id, proximo_id) = Self::proximo_id(&mut cliente_mmap);
+    pub fn adicionar_cliente(&mut self, cliente_row: &mut ClienteRow) {
+        let (id, proximo_id) = Self::proximo_id(&mut self.cliente);
         cliente_row.id = proximo_id;
-
         let offset = (id as usize) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-        cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW].copy_from_slice(&cliente_row.to_bytes());
+        let _ = &self.cliente[offset..offset + TAMANHO_CLIENTE_ROW].copy_from_slice(&cliente_row.to_bytes());
     }
 
-    fn proximo_id(mmap: &mut MutexGuard<MmapMut>) -> (u16, u16) {
-        let mut id = [0u8; 2];
-        id.copy_from_slice(&mmap[0..2]);
-        let id = u16::from_ne_bytes(id);
+    fn proximo_id(mmap: &mut MmapMut) -> (u16, u16) {
+        let id = u16::from_ne_bytes([mmap[0], mmap[1]]);
         let proximo_id = id + 1;
-        mmap[0..2].copy_from_slice(&proximo_id.to_ne_bytes());
+        mmap[0] = proximo_id.to_ne_bytes()[0];
+        mmap[1] = proximo_id.to_ne_bytes()[1];
         (id, proximo_id)
     }
 
-    pub fn adicionar_transacao(&self, mut transacao_row: TransacaoRow) {
-        let mut transacao_mmap = self.transacao.lock().unwrap();
-
-        let (id, proximo_id) = Self::proximo_id(&mut transacao_mmap);
-
+    pub fn adicionar_transacao(&mut self, mut transacao_row: TransacaoRow) {
+        let (id, proximo_id) = Self::proximo_id(&mut self.transacao[transacao_row.cliente_id as usize - 1]);
         transacao_row.id = proximo_id;
         transacao_row.descricao = format!("{: <10}", transacao_row.descricao).chars().take(10).collect();
-
         let offset = (id as usize) * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
-        transacao_mmap[offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
+        self.transacao[transacao_row.cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW].copy_from_slice(&transacao_row.to_bytes());
     }
 
-    pub fn recuperar_cliente(&self, id: i16) -> ClienteRow {
-        let cliente_mmap = self.cliente.lock().unwrap();
-        let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-        ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW])
-    }
+    // pub fn recuperar_cliente(&self, id: i16) -> ClienteRow {
+    //     let cliente_mmap = self.cliente.lock().unwrap();
+    //     let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
+    //     ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW])
+    // }
 
     pub fn recuperar_saldo(&self, id: i16) -> i32 {
-        let cliente_mmap = self.cliente.lock().unwrap();
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-        ClienteRow::from_bytes(&cliente_mmap[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
+        ClienteRow::from_bytes(&self.cliente[offset..offset + TAMANHO_CLIENTE_ROW]).saldo
     }
 
     pub fn recuperar_transacoes(&self, cliente_id: i16) -> Vec<TransacaoRow> {
-        let transacao_mmap = self.transacao.lock().unwrap();
-        let num_transacoes = u16::from_ne_bytes([transacao_mmap[0], transacao_mmap[1]]);
+        let num_transacoes = u16::from_ne_bytes([self.transacao[cliente_id as usize - 1][0], self.transacao[cliente_id as usize - 1][1]]);
         let mut transacoes = Vec::new();
         for i in (1..=num_transacoes).rev() {
             let offset = (i - 1) as usize * TAMANHO_TRANSACAO_ROW + TAMANHO_SEQ;
-            let transacao = TransacaoRow::from_bytes(&transacao_mmap[offset..offset + TAMANHO_TRANSACAO_ROW]);
+            let transacao = TransacaoRow::from_bytes(&self.transacao[cliente_id as usize - 1][offset..offset + TAMANHO_TRANSACAO_ROW]);
             if transacao.cliente_id == cliente_id {
                 transacoes.push(transacao);
                 if transacoes.len() == 10  { break; }
@@ -190,16 +177,13 @@ impl RinhaDatabase {
         transacoes
     }
 
-    pub fn transacionar(&self, id: i16, novo_saldo: i32) -> i32 {
-        let mut cliente_mmap = self.cliente.lock().unwrap();
+    pub fn transacionar(&mut self, id: i16, novo_saldo: i32)  {
         let offset = (id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ + 2;
-        cliente_mmap[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
-        novo_saldo
+        let _ = &self.cliente[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
     }
 }
 
-#[derive(Debug)]
-pub struct AppState { pub pg_pool: Pool, pub db: RinhaDatabase}
+pub struct AppState { pub pg_pool: Pool, pub db: Mutex<RinhaDatabase>}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
 
@@ -217,26 +201,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
     //debug!("Caminho do banco de dados: {}", db_path);
-    let controle_file = abrir_e_inicializar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
-    let cliente_file = abrir_e_inicializar_arquivo(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
-    let transacao_file = abrir_e_inicializar_arquivo(format!("{db_path}/transacao.db").as_str(), 1024 * 10 * 1000);
+    let controle_file = criar(format!("{db_path}/controle.db").as_str(), 3);
+    let cliente_file = criar(format!("{db_path}/cliente.db").as_str(), 1024 * 10);
+    let transacoes_file =
+        vec![criar(format!("{db_path}/transacao_1.db").as_str(), 1024 * 10 * 200),
+             criar(format!("{db_path}/transacao_2.db").as_str(), 1024 * 10 * 200),
+             criar(format!("{db_path}/transacao_3.db").as_str(), 1024 * 10 * 200),
+             criar(format!("{db_path}/transacao_4.db").as_str(), 1024 * 10 * 200),
+             criar(format!("{db_path}/transacao_5.db").as_str(), 1024 * 10 * 200)
+    ];
 
-    let rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, &transacao_file);
+    let mut rinha_db = RinhaDatabase::new(&controle_file, &cliente_file, transacoes_file);
 
-    rinha_db.iniciar_trans();
+    rinha_db.abrir_trans();
     rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
     rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
     rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
     rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
     rinha_db.adicionar_cliente(&mut ClienteRow::new(0));
-    rinha_db.finalizar_trans();
+    rinha_db.fechar_trans();
 
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .route("/lock", get(get_lock).post(post_lock))
-        .route("/unlock", post(post_unlock))
-        .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
+        // .route("/lock", get(get_lock).post(post_lock))
+        // .route("/unlock", post(post_unlock))
+        .with_state(Arc::new(AppState { pg_pool , db: Mutex::new(rinha_db) }));
 
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
     //info!("Escutando na porta {}...", http_port);
@@ -245,7 +235,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
-
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
 
     let t = match from_slice::<TransacaoPayload>(&transacao) {
@@ -253,30 +242,33 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
 
-    let limite_cliente = LIMITES[(cliente_id - 1) as usize];
+    let limite = LIMITES[(cliente_id - 1) as usize];
 
-    s.db.iniciar_trans();
-    let saldo_antigo = s.db.recuperar_saldo(cliente_id);
-    if t.tipo == 'd' && saldo_antigo - t.valor < -limite_cliente {
+    let mut db = s.db.lock().unwrap();
+    db.abrir_trans();
+    let saldo_antigo = db.recuperar_saldo(cliente_id);
+    if t.tipo == 'd' && saldo_antigo - t.valor < -limite {
         return (StatusCode::UNPROCESSABLE_ENTITY, String::new());
     }
-    let novo_saldo = s.db.transacionar(cliente_id, saldo_antigo + if t.tipo == 'd' { -t.valor } else { t.valor });
-    s.db.adicionar_transacao(TransacaoRow::new(cliente_id, t.valor, t.tipo, t.descricao.as_str(), now()));
-    s.db.finalizar_trans();
+    let novo_saldo = saldo_antigo + if t.tipo == 'd' { -t.valor } else { t.valor };
+    db.transacionar(cliente_id, novo_saldo);
+    db.adicionar_transacao(TransacaoRow::new(cliente_id, t.valor, t.tipo, t.descricao.as_str(), now()));
+    db.fechar_trans();
 
-    (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite: limite_cliente }).unwrap())
+    (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite }).unwrap())
 }
 
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>) -> impl IntoResponse {
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
+    let db = s.db.lock().unwrap();
     (StatusCode::OK, to_string(
         &Extrato {
             saldo: Saldo{
-                total: s.db.recuperar_saldo(cliente_id),
+                total: db.recuperar_saldo(cliente_id),
                 data_extrato: now(),
                 limite: LIMITES[(cliente_id -1) as usize]
             },
-            ultimas_transacoes: s.db.recuperar_transacoes(cliente_id).iter()
+            ultimas_transacoes: db.recuperar_transacoes(cliente_id).iter()
                 .map(|row| Transacao {
                     valor: row.valor,
                     tipo: row.tipo.to_string(),
@@ -286,34 +278,25 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
     ).unwrap())
 }
 
-pub async fn get_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-}
+// pub async fn get_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+// }
+//
+// pub async fn post_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+//     s.db.controle.lock().unwrap()[0] = 1;
+//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+// }
+//
+// pub async fn post_unlock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+//     s.db.controle.lock().unwrap()[0] = 0;
+//     (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
+// }
 
-pub async fn post_lock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    s.db.controle.lock().unwrap()[0] = 1;
-    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-}
-
-pub async fn post_unlock(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    s.db.controle.lock().unwrap()[0] = 0;
-    (StatusCode::OK, s.db.controle.lock().unwrap()[0].to_string())
-}
-
-pub fn  abrir_e_inicializar_arquivo(path: &str, size: u64) -> File {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .unwrap();
+pub fn criar(path: &str, size: u64) -> File {
+    let file = OpenOptions::new().read(true).write(true).create(true)
+        .truncate(true).open(path).unwrap();
     file.set_len(size).unwrap();
     file
-}
-
-pub fn inicializar_mmap(file: &File) -> Mutex<MmapMut> {
-    unsafe { Mutex::new(MmapMut::map_mut(&file).unwrap()) }
 }
 
 #[derive(serde::Deserialize)]
