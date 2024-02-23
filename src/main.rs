@@ -9,12 +9,9 @@ use deadpool_postgres::{Pool, Runtime::Tokio1, tokio_postgres::NoTls};
 use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use tokio::net::TcpListener;
-
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
-
 const TAMANHO_SEQ: usize = 2;
 pub trait Row { fn from_bytes(slice: &[u8]) -> Self; fn to_bytes(&self) -> Vec<u8>; }
-
 const TAMANHO_CLIENTE_ROW: usize = 7;
 pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
 impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
@@ -35,7 +32,6 @@ impl Row for ClienteRow {
         bytes
     }
 }
-
 const TAMANHO_TRANSACAO_ROW: usize = 28;
 pub struct TransacaoRow { pub id: u16, pub cliente_id: i16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64, pub lock: bool }
 impl TransacaoRow {
@@ -68,7 +64,6 @@ impl Row for TransacaoRow {
         bytes
     }
 }
-
 pub struct RinhaDatabase { pub controle: MmapMut, pub cliente: MmapMut, pub transacao: Vec<MmapMut> }
 impl RinhaDatabase {
     pub fn new(controle_file: &File, cliente_file: &File, transacoes_file: Vec<File>) -> Self {
@@ -137,7 +132,6 @@ impl RinhaDatabase {
         let _ = &self.cliente[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
     }
 }
-
 pub struct AppState { pub pg_pool: Pool, pub db: Mutex<RinhaDatabase>}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -158,7 +152,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     axum::serve(listener, app).await?;
     Ok(())
 }
-
 pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>, transacao: body::Bytes) -> impl IntoResponse  {
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()); }
 
@@ -182,7 +175,6 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
 
     (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite }).unwrap())
 }
-
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<i16>) -> impl IntoResponse {
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
     let db = s.db.lock().unwrap();
@@ -202,14 +194,12 @@ pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<
                 }).collect()}
     ).unwrap())
 }
-
 pub fn criar_arquivo(path: &str, size: u64) -> File {
     let file = OpenOptions::new().read(true).write(true).create(true)
         .truncate(true).open(path).unwrap();
     file.set_len(size).unwrap();
     file
 }
-
 fn criar_db() -> RinhaDatabase {
     let db_path = env::var("DB_PATH").unwrap_or_else(|_| "./temp".to_string());
     let controle_file = criar_arquivo(format!("{db_path}/controle.db").as_str(), 3);
@@ -232,7 +222,6 @@ fn criar_db() -> RinhaDatabase {
     rinha_db.fechar_trans();
     rinha_db
 }
-
 #[derive(serde::Deserialize)]
 pub struct Config { pub pg: deadpool_postgres::Config }
 impl Config {
