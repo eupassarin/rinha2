@@ -9,12 +9,11 @@ export let options = {
         { duration: '10s', target: 0 } //
     ],
     thresholds: {
-        'http_req_duration': ['p(95)<1']
+        'http_req_duration': ['p(99)<1'],
     }
 };
 
 export default function () {
-    // Realiza a solicitação GET
     let res = http.get('http://localhost:9999/clientes/1/extrato');
     check(res, {
         'status is 200': (r) => r.status === 200
