@@ -1,67 +1,9 @@
-use std::{env, sync::Arc};
-use std::error::Error;
-use std::fs::{File, OpenOptions};
-use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{env, sync::Arc, error::Error, fs::{File, OpenOptions}, thread::sleep, time::{Duration, SystemTime, UNIX_EPOCH}};
 use axum::{body, extract::{Path, State}, http::StatusCode, response::IntoResponse, Router, routing::{get, post}};
-use deadpool_postgres::{Pool, Runtime::Tokio1, tokio_postgres::NoTls};
 use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use spin::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::net::TcpListener;
-static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
-const TAMANHO_SEQ: usize = 2;
-pub trait Row { fn from_bytes(slice: &[u8]) -> Self; fn to_bytes(&self) -> Vec<u8>; }
-const TAMANHO_CLIENTE_ROW: usize = 7;
-pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
-impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
-impl Row for ClienteRow {
-    fn from_bytes(slice: &[u8]) -> Self {
-        Self {
-            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
-            saldo: i32::from_ne_bytes(slice[2..6].try_into().unwrap()),
-            lock: slice[6] == 1,
-        }
-    }
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(7);
-        bytes.extend_from_slice(&self.id.to_ne_bytes());
-        bytes.extend_from_slice(&self.saldo.to_ne_bytes());
-        bytes.push(self.lock as u8);
-        bytes
-    }
-}
-const TAMANHO_TRANSACAO_ROW: usize = 28;
-pub struct TransacaoRow { pub id: u16, pub cliente_id: u16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64, pub lock: bool }
-impl TransacaoRow {
-    pub fn new(cliente_id: u16 , valor: i32, tipo: char, descricao: &str, realizada_em: u64) -> Self {
-        Self { id: 0, cliente_id, valor, tipo, descricao: descricao.to_string(), realizada_em, lock: false }
-    }
-}
-impl Row for TransacaoRow {
-    fn from_bytes(slice: &[u8]) -> Self {
-        Self {
-            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
-            cliente_id: u16::from_ne_bytes(slice[2..4].try_into().unwrap()),
-            valor: i32::from_ne_bytes(slice[4..8].try_into().unwrap()),
-            tipo: slice[8] as char,
-            descricao: String::from_utf8_lossy(&slice[9..19]).to_string(),
-            realizada_em: u64::from_ne_bytes(slice[19..27].try_into().unwrap()),
-            lock: slice[27] == 1,
-        }
-    }
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(28);
-        bytes.extend_from_slice(&self.id.to_ne_bytes());
-        bytes.extend_from_slice(&self.cliente_id.to_ne_bytes());
-        bytes.extend_from_slice(&self.valor.to_ne_bytes());
-        bytes.push(self.tipo as u8);
-        bytes.extend_from_slice(self.descricao.as_bytes());
-        bytes.extend_from_slice(&self.realizada_em.to_ne_bytes());
-        bytes.push(self.lock as u8);
-        bytes
-    }
-}
 pub struct RinhaDatabase { pub controle: Mutex<MmapMut>, pub cliente: RwLock<MmapMut>, pub transacao: Vec<RwLock<MmapMut>> }
 impl RinhaDatabase {
     pub fn new(controle_file: &File, cliente_file: &File, transacoes_file: Vec<File>) -> Self {
@@ -73,32 +15,25 @@ impl RinhaDatabase {
     }
     pub fn abrir_trans(&mut self) {
         let mut controle = self.controle.lock();
-        let mut t = 10;
+        let mut tentativas = 10;
         loop {
             if controle[0] == 0 { controle[0] = 1; return; }
-            t -= 1;
-            if t == 0 { controle[0] = 0; continue; }
+            tentativas -= 1; if tentativas == 0 { controle[0] = 0; continue; }
             sleep(Duration::from_nanos(1));
         }
     }
-    pub fn abrir_trans_cliente(&self, cliente_id: u16)  {
+    pub fn abrir_trans_cliente(&self, cliente_id: u16) {
         let mut cliente = self.cliente.write();
-        let mut t = 10;
+        let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
+        let mut tentativas = 10;
         loop {
-            let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
-            if cliente[offset..offset + TAMANHO_CLIENTE_ROW][6] == 0 {
-                cliente[offset..offset + TAMANHO_CLIENTE_ROW][6] = 1;
-                return;
-            }
-            t -= 1;
-            if t == 0 { cliente[offset..offset + TAMANHO_CLIENTE_ROW][6] = 0; continue; }
+            let cliente_row = &mut cliente[offset..offset + TAMANHO_CLIENTE_ROW];
+            if cliente_row[6] == 0 {  cliente_row[6] = 1; return; }
+            tentativas -= 1; if tentativas == 0 { cliente_row[6] = 0; continue; }
             sleep(Duration::from_nanos(1));
         }
     }
-    pub fn fechar_trans(&self) {
-        let mut controle = self.controle.lock();
-        controle[0] = 0;
-    }
+    pub fn fechar_trans(&self) { self.controle.lock()[0] = 0; }
     pub fn fechar_trans_cliente(&self, cliente_id: u16) {
         let mut cliente = self.cliente.write();
         let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ;
@@ -146,23 +81,17 @@ impl RinhaDatabase {
     pub fn transacionar(&self, cliente_id: u16, novo_saldo: i32)  {
         let cliente = &mut self.cliente.write();
         let offset = (cliente_id as usize - 1) * TAMANHO_CLIENTE_ROW + TAMANHO_SEQ + 2;
-        let _ = &cliente[offset..offset + 4].copy_from_slice(&(novo_saldo).to_ne_bytes());
+        let _ = &cliente[offset..offset + 4].copy_from_slice(&novo_saldo.to_ne_bytes());
     }
 }
-pub struct AppState { pub pg_pool: Pool, pub db: RinhaDatabase}
+pub struct AppState { pub db: RinhaDatabase }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
-    let cfg = Config::from_env()?;
-    let pg_pool = cfg.pg.create_pool(Some(Tokio1), NoTls)?;
-    let rinha_db = criar_db();
-
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(Arc::new(AppState { pg_pool , db: rinha_db }));
-
-
+        .with_state(Arc::new(AppState { db: criar_db() }));
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
     axum::serve(listener, app).await?;
@@ -174,10 +103,9 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
         Ok(p) if p.descricao.len() >= 1 && p.descricao.len() <= 10 && (p.tipo == 'd' || p.tipo == 'c') => p,
         _ => return (StatusCode::UNPROCESSABLE_ENTITY, String::new())
     };
-    let limite = LIMITES[(cliente_id - 1) as usize];
     s.db.abrir_trans_cliente(cliente_id);
     let saldo_antigo = s.db.saldo(cliente_id);
-    if t.tipo == 'd' && saldo_antigo - t.valor < -limite {
+    if t.tipo == 'd' && saldo_antigo - t.valor < -LIMITES[(cliente_id - 1) as usize] {
         s.db.fechar_trans_cliente(cliente_id);
         return (StatusCode::UNPROCESSABLE_ENTITY, String::new());
     }
@@ -185,7 +113,7 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
     s.db.transacionar(cliente_id, novo_saldo);
     s.db.adicionar_transacao(TransacaoRow::new(cliente_id, t.valor, t.tipo, t.descricao.as_str(), now()));
     s.db.fechar_trans_cliente(cliente_id);
-    (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite }).unwrap())
+    (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite: LIMITES[(cliente_id - 1) as usize] }).unwrap())
 }
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
     if cliente_id > 5 { return (StatusCode::NOT_FOUND, String::new()) }
@@ -217,14 +145,54 @@ fn criar_db() -> RinhaDatabase {
     rinha_db.fechar_trans();
     rinha_db
 }
-#[derive(serde::Deserialize)]
-pub struct Config { pub pg: deadpool_postgres::Config }
-impl Config {
-    pub fn from_env() -> Result<Self, config::ConfigError> {
-        config::Config::builder()
-            .add_source(config::Environment::default().separator("__"))
-            .build()?
-            .try_deserialize()
+pub trait Row { fn from_bytes(slice: &[u8]) -> Self; fn to_bytes(&self) -> Vec<u8>; }
+const TAMANHO_SEQ: usize = 2;
+const TAMANHO_CLIENTE_ROW: usize = 7;
+pub struct ClienteRow { pub id: u16, pub saldo: i32, pub lock: bool }
+impl ClienteRow { pub fn new( saldo: i32) -> Self { Self { id: 0,  saldo, lock: false } } }
+impl Row for ClienteRow {
+    fn from_bytes(slice: &[u8]) -> Self {
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            saldo: i32::from_ne_bytes(slice[2..6].try_into().unwrap()),
+            lock: slice[6] == 1,
+        }
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(7);
+        bytes.extend_from_slice(&self.id.to_ne_bytes());
+        bytes.extend_from_slice(&self.saldo.to_ne_bytes());
+        bytes.push(self.lock as u8);
+        bytes
+    }
+}
+const TAMANHO_TRANSACAO_ROW: usize = 27;
+pub struct TransacaoRow { pub id: u16, pub cliente_id: u16, pub valor: i32, pub tipo: char, pub descricao: String, pub realizada_em: u64}
+impl TransacaoRow {
+    pub fn new(cliente_id: u16 , valor: i32, tipo: char, descricao: &str, realizada_em: u64) -> Self {
+        Self { id: 0, cliente_id, valor, tipo, descricao: descricao.to_string(), realizada_em }
+    }
+}
+impl Row for TransacaoRow {
+    fn from_bytes(slice: &[u8]) -> Self {
+        Self {
+            id: u16::from_ne_bytes(slice[0..2].try_into().unwrap()),
+            cliente_id: u16::from_ne_bytes(slice[2..4].try_into().unwrap()),
+            valor: i32::from_ne_bytes(slice[4..8].try_into().unwrap()),
+            tipo: slice[8] as char,
+            descricao: String::from_utf8_lossy(&slice[9..19]).to_string(),
+            realizada_em: u64::from_ne_bytes(slice[19..27].try_into().unwrap())
+        }
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(28);
+        bytes.extend_from_slice(&self.id.to_ne_bytes());
+        bytes.extend_from_slice(&self.cliente_id.to_ne_bytes());
+        bytes.extend_from_slice(&self.valor.to_ne_bytes());
+        bytes.push(self.tipo as u8);
+        bytes.extend_from_slice(self.descricao.as_bytes());
+        bytes.extend_from_slice(&self.realizada_em.to_ne_bytes());
+        bytes
     }
 }
 #[derive(serde::Deserialize)]
@@ -238,3 +206,4 @@ pub struct Saldo { pub total: i32, pub data_extrato: u64, pub limite: i32 }
 #[derive(serde::Serialize)]
 pub struct Transacao<'a> { pub valor: i32, pub tipo: String, pub descricao: &'a str, pub realizada_em: u64 }
 pub fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 }
+static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
