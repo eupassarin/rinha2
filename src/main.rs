@@ -1,9 +1,13 @@
 use std::{env, sync::Arc, error::Error, fs::{File, OpenOptions}, thread::sleep, time::{Duration, SystemTime, UNIX_EPOCH}};
 use axum::{body, extract::{Path, State}, http::StatusCode, response::IntoResponse, Router, routing::{get, post}};
+use deadpool_postgres::Runtime::Tokio1;
+use deadpool_postgres::tokio_postgres::NoTls;
 use memmap::MmapMut;
 use serde_json::{from_slice, to_string};
 use spin::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::net::TcpListener;
+use tokio::task;
+
 pub struct RinhaDatabase { pub controle: Mutex<MmapMut>, pub cliente: RwLock<MmapMut>, pub transacao: Vec<RwLock<MmapMut>> }
 impl RinhaDatabase {
     pub fn new(controle_file: &File, cliente_file: &File, transacoes_file: Vec<File>) -> Self {
@@ -84,14 +88,15 @@ impl RinhaDatabase {
         let _ = &cliente[offset..offset + 4].copy_from_slice(&novo_saldo.to_ne_bytes());
     }
 }
-pub struct AppState { pub db: RinhaDatabase }
+pub struct AppState { pub db: RinhaDatabase, pub pg_pool: deadpool_postgres::Pool }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::from_path(".env.local").ok().unwrap_or_else(|| {dotenv::dotenv().ok();});
+    let pg_pool = Config::from_env()?.pg.create_pool(Some(Tokio1), NoTls)?;
     let app = Router::new()
         .route("/clientes/:id/transacoes", post(post_transacoes))
         .route("/clientes/:id/extrato", get(get_extrato))
-        .with_state(Arc::new(AppState { db: criar_db() }));
+        .with_state(Arc::new(AppState { db: criar_db(), pg_pool }));
     let http_port = env::var("HTTP_PORT").unwrap_or_else(|_| "80".to_string());
     let listener = TcpListener::bind(format!("0.0.0.0:{http_port}")).await?;
     axum::serve(listener, app).await?;
@@ -109,10 +114,16 @@ pub async fn post_transacoes(State(s): State<Arc<AppState>>, Path(cliente_id): P
         s.db.fechar_trans_cliente(cliente_id);
         return (StatusCode::UNPROCESSABLE_ENTITY, String::new());
     }
-    let novo_saldo = saldo_antigo + if t.tipo == 'd' { -t.valor } else { t.valor };
+    let valor = if t.tipo == 'd' { -t.valor } else { t.valor };
+    let novo_saldo = saldo_antigo + valor;
     s.db.transacionar(cliente_id, novo_saldo);
     s.db.adicionar_transacao(TransacaoRow::new(cliente_id, t.valor, t.tipo, t.descricao.as_str(), now()));
     s.db.fechar_trans_cliente(cliente_id);
+    task::spawn(async move {
+        let conn = s.pg_pool.get().await.unwrap();
+        conn.query(UPDATE_SALDO, &[&valor, &(cliente_id as i16)]).await.unwrap();
+        conn.query(INSERT_TRANSACAO, &[&(cliente_id as i16), &t.valor, &t.tipo.to_string(), &t.descricao]).await.unwrap();
+    });
     (StatusCode::OK, to_string(&SaldoLimite { saldo: novo_saldo, limite: LIMITES[(cliente_id - 1) as usize] }).unwrap())
 }
 pub async fn get_extrato(State(s): State<Arc<AppState>>, Path(cliente_id): Path<u16>) -> impl IntoResponse {
@@ -207,3 +218,15 @@ pub struct Saldo { pub total: i32, pub data_extrato: u64, pub limite: i32 }
 pub struct Transacao<'a> { pub valor: i32, pub tipo: String, pub descricao: &'a str, pub realizada_em: u64 }
 pub fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 }
 static LIMITES: &'static [i32] = &[1000_00, 800_00,10000_00,100000_00,5000_00];
+const UPDATE_SALDO: &str = "UPDATE C SET S = S + $1 WHERE I = $2";
+const INSERT_TRANSACAO: &str = "INSERT INTO T(I, V, P, D) VALUES($1, $2, $3, $4)";
+#[derive(serde::Deserialize)]
+pub struct Config { pub pg: deadpool_postgres::Config }
+impl Config {
+    pub fn from_env() -> Result<Self, config::ConfigError> {
+        config::Config::builder()
+            .add_source(config::Environment::default().separator("__"))
+            .build()?
+            .try_deserialize()
+    }
+}
